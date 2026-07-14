@@ -1,0 +1,25 @@
+{
+  "schedule": {
+    "morning_start": "09:00",
+    "lunch_start": "12:00",
+    "afternoon_start": "13:30",
+    "off_work": "18:00"
+  },
+  "calendar": {
+    "weekend_rest": true,
+    "holiday_dates": [],
+    "workday_overrides": []
+  },
+  "window": {
+    "x": null,
+    "y": null,
+    "alpha": 0.88,
+    "always_on_top": true
+  },
+  "style": {
+    "background": "#101418",
+    "foreground": "#F3F7FA",
+    "muted": "#9BA7B0",
+    "accent": "#39A0ED"
+  }
+}
