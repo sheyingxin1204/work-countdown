@@ -16,6 +16,11 @@ except ImportError:  # The widget can still run without a tray dependency.
     pystray = None
     Image = None
 
+try:
+    import winsound
+except ImportError:  # Available on Windows; keep source-mode tests portable.
+    winsound = None
+
 
 if getattr(sys, "frozen", False):
     # Keep user configuration beside the packaged EXE instead of inside the
@@ -115,6 +120,12 @@ DEFAULT_CONFIG = {
         "margin": 18,
         "alpha": 0.88,
         "always_on_top": True,
+    },
+    "notifications": {
+        "enabled": True,
+        "lunch": True,
+        "off_work": True,
+        "sound": False,
     },
     "style": {
         "background": "#101418",
@@ -263,6 +274,7 @@ class WorkSchedule:
         if not calendar.is_workday(today):
             next_day = calendar.next_workday(today + timedelta(days=1))
             return {
+                "kind": "rest",
                 "status": "休息日",
                 "countdown_name": "下个上班",
                 "countdown_at": self.at(next_day, self.morning_start),
@@ -275,24 +287,28 @@ class WorkSchedule:
 
         if now < morning_start:
             return {
+                "kind": "before_work",
                 "status": "未上班",
                 "countdown_name": "距离上班",
                 "countdown_at": morning_start,
             }
         if now < lunch_start:
             return {
+                "kind": "morning",
                 "status": "上午上班",
                 "countdown_name": "距离午休",
                 "countdown_at": lunch_start,
             }
         if now < afternoon_start:
             return {
+                "kind": "lunch",
                 "status": "午休中",
                 "countdown_name": "下午上班",
                 "countdown_at": afternoon_start,
             }
         if now < off_work:
             return {
+                "kind": "afternoon",
                 "status": "下午上班",
                 "countdown_name": "距离下班",
                 "countdown_at": off_work,
@@ -300,6 +316,7 @@ class WorkSchedule:
 
         next_day = calendar.next_workday(today + timedelta(days=1))
         return {
+            "kind": "off_work",
             "status": "已下班",
             "countdown_name": "下个上班",
             "countdown_at": self.at(next_day, self.morning_start),
@@ -317,6 +334,8 @@ class CountdownWidget:
         self.tray_thread = None
         self.is_closing = False
         self.settings_dialog = None
+        self.last_state_kind = None
+        self.last_state_date = None
 
         self.root = tk.Tk()
         self.root.title(APP_NAME)
@@ -777,6 +796,40 @@ class CountdownWidget:
             relief="flat",
         ).grid(row=2, column=1, padx=(12, 0), pady=(8, 0), sticky="w")
 
+        notification_frame = tk.LabelFrame(
+            shell,
+            text="提醒",
+            bg=background,
+            fg=foreground,
+            font=("Microsoft YaHei UI", 10, "bold"),
+            padx=12,
+            pady=8,
+        )
+        notification_frame.pack(fill="x", pady=(0, 14))
+        notifications = self.config.get("notifications", {})
+        notifications_enabled_var = tk.BooleanVar(value=bool(notifications.get("enabled", True)))
+        lunch_notification_var = tk.BooleanVar(value=bool(notifications.get("lunch", True)))
+        off_work_notification_var = tk.BooleanVar(value=bool(notifications.get("off_work", True)))
+        sound_notification_var = tk.BooleanVar(value=bool(notifications.get("sound", False)))
+        notification_checks = (
+            (notifications_enabled_var, "启用 Windows 提醒"),
+            (lunch_notification_var, "午休开始时提醒"),
+            (off_work_notification_var, "下班时提醒"),
+            (sound_notification_var, "提醒时播放提示音"),
+        )
+        for row, (variable, label) in enumerate(notification_checks):
+            tk.Checkbutton(
+                notification_frame,
+                text=label,
+                variable=variable,
+                bg=background,
+                fg=foreground,
+                activebackground=background,
+                activeforeground=foreground,
+                selectcolor="#26313A",
+                font=("Microsoft YaHei UI", 9),
+            ).grid(row=row // 2, column=row % 2, padx=(0, 18), pady=2, sticky="w")
+
         actions = tk.Frame(shell, bg=background)
         actions.pack(fill="x")
 
@@ -798,6 +851,12 @@ class CountdownWidget:
                 candidate["window"]["alpha"] = round(float(alpha_var.get()), 2)
                 candidate["window"]["always_on_top"] = bool(topmost_var.get())
                 candidate["window"]["margin"] = max(8, min(64, int(margin_var.get())))
+                candidate["notifications"] = {
+                    "enabled": bool(notifications_enabled_var.get()),
+                    "lunch": bool(lunch_notification_var.get()),
+                    "off_work": bool(off_work_notification_var.get()),
+                    "sound": bool(sound_notification_var.get()),
+                }
                 WorkSchedule(candidate)
                 WorkCalendar(candidate)
                 save_config(candidate)
@@ -852,9 +911,48 @@ class CountdownWidget:
         self.update_display()
         self.root.after(1000, self.update)
 
+    def maybe_notify(self, state, now):
+        """Notify once when the widget enters a configured workday state."""
+        current_date = now.date()
+        if self.last_state_date != current_date:
+            self.last_state_date = current_date
+            self.last_state_kind = None
+
+        previous_kind = self.last_state_kind
+        current_kind = state.get("kind")
+        self.last_state_kind = current_kind
+        if previous_kind is None or previous_kind == current_kind:
+            return
+
+        notifications = self.config.get("notifications", {})
+        if not bool(notifications.get("enabled", True)):
+            return
+
+        if current_kind == "lunch" and bool(notifications.get("lunch", True)):
+            self.notify_user("午休提醒", "午休开始了，休息一下吧。", notifications)
+        elif current_kind == "off_work" and bool(notifications.get("off_work", True)):
+            self.notify_user("下班提醒", "下班时间到了，今天辛苦了。", notifications)
+
+    def notify_user(self, title, message, notifications):
+        """Send a tray notification and optionally play the Windows sound."""
+        if self.tray_icon is not None:
+            try:
+                self.tray_icon.notify(message, title)
+            except Exception:
+                # Some tray backends do not implement notifications. The
+                # optional sound still provides feedback in that case.
+                pass
+
+        if bool(notifications.get("sound", False)) and winsound is not None:
+            try:
+                winsound.MessageBeep(winsound.MB_ICONINFORMATION)
+            except Exception:
+                pass
+
     def update_display(self):
         now = datetime.now()
         state = self.schedule.state(now, self.calendar)
+        self.maybe_notify(state, now)
 
         self.status_value.configure(text=state["status"])
         self.countdown_label.configure(text=state["countdown_name"])

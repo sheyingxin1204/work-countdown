@@ -17,6 +17,12 @@
     "alpha": 0.88,
     "always_on_top": true
   },
+  "notifications": {
+    "enabled": true,
+    "lunch": true,
+    "off_work": true,
+    "sound": false
+  },
   "style": {
     "background": "#101418",
     "foreground": "#F3F7FA",
