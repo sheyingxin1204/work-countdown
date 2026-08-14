@@ -3,7 +3,18 @@
     "morning_start": "09:00",
     "lunch_start": "12:00",
     "afternoon_start": "13:30",
-    "off_work": "18:00"
+    "off_work": "18:00",
+    "work_segments": [
+      {
+        "start": "09:00",
+        "end": "12:00"
+      },
+      {
+        "start": "13:30",
+        "end": "18:00"
+      }
+    ],
+    "overtime_end": null
   },
   "calendar": {
     "weekend_rest": true,

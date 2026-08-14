@@ -125,6 +125,11 @@ DEFAULT_CONFIG = {
         "lunch_start": "12:00",
         "afternoon_start": "13:30",
         "off_work": "18:00",
+        "work_segments": [
+            {"start": "09:00", "end": "12:00"},
+            {"start": "13:30", "end": "18:00"},
+        ],
+        "overtime_end": None,
     },
     "calendar": {
         "weekend_rest": True,
@@ -229,6 +234,17 @@ def load_config():
 
 def migrate_legacy_config(config):
     if "schedule" in config:
+        schedule = config.get("schedule", {})
+        if isinstance(schedule, dict) and "work_segments" not in schedule:
+            schedule = deepcopy(schedule)
+            if all(key in schedule for key in ("morning_start", "lunch_start", "afternoon_start", "off_work")):
+                schedule["work_segments"] = [
+                    {"start": schedule["morning_start"], "end": schedule["lunch_start"]},
+                    {"start": schedule["afternoon_start"], "end": schedule["off_work"]},
+                ]
+            migrated = deepcopy(config)
+            migrated["schedule"] = schedule
+            return migrated
         return config
 
     migrated = deepcopy(config)
@@ -238,6 +254,10 @@ def migrate_legacy_config(config):
         "afternoon_start": "15:30",
         "off_work": config.get("off_work_time", "19:30"),
     }
+    migrated["schedule"]["work_segments"] = [
+        {"start": migrated["schedule"]["morning_start"], "end": migrated["schedule"]["lunch_start"]},
+        {"start": migrated["schedule"]["afternoon_start"], "end": migrated["schedule"]["off_work"]},
+    ]
     migrated.pop("lunch_time", None)
     migrated.pop("off_work_time", None)
     return migrated
@@ -340,6 +360,42 @@ def write_calendar_file(path, holiday_dates, workday_overrides, year=None):
         calendar_file.write("\n")
 
 
+def parse_work_segments(value):
+    """Parse lines such as ``09:00-12:00`` into ordered time segments."""
+    if isinstance(value, (list, tuple)):
+        items = value
+    else:
+        items = [line.strip() for line in str(value).splitlines() if line.strip()]
+    segments = []
+    for item in items:
+        if isinstance(item, dict):
+            start_value = item.get("start")
+            end_value = item.get("end")
+        else:
+            text = str(item).replace("至", "-").replace("~", "-")
+            if "-" not in text:
+                raise ValueError(f"工作时段格式无效: {item}")
+            start_value, end_value = (part.strip() for part in text.split("-", 1))
+        start = parse_clock(str(start_value).strip())
+        end = parse_clock(str(end_value).strip())
+        if start >= end:
+            raise ValueError(f"工作时段必须是开始时间早于结束时间: {item}")
+        segments.append({"start": format_clock(start), "end": format_clock(end)})
+
+    if not segments:
+        raise ValueError("至少需要一个工作时段")
+    if len(segments) > 4:
+        raise ValueError("最多支持 4 个工作时段")
+    for previous, current in zip(segments, segments[1:]):
+        if parse_clock(previous["end"]) > parse_clock(current["start"]):
+            raise ValueError("工作时段不能重叠，且必须按时间顺序填写")
+    return segments
+
+
+def format_work_segments(segments):
+    return "\n".join(f"{item['start']} - {item['end']}" for item in parse_work_segments(segments))
+
+
 def format_remaining(delta):
     seconds = max(0, int(delta.total_seconds()))
     hours, seconds = divmod(seconds, 3600)
@@ -391,23 +447,41 @@ class WorkCalendar:
 class WorkSchedule:
     def __init__(self, config):
         schedule = config["schedule"]
-        self.morning_start = parse_clock(schedule["morning_start"])
-        self.lunch_start = parse_clock(schedule["lunch_start"])
-        self.afternoon_start = parse_clock(schedule["afternoon_start"])
-        self.off_work = parse_clock(schedule["off_work"])
-        if not (
-            self.morning_start < self.lunch_start < self.afternoon_start < self.off_work
-        ):
-            raise ValueError("上下班时间必须依次递增，请检查时间设置。")
+        raw_segments = schedule.get("work_segments")
+        if raw_segments:
+            segment_values = parse_work_segments(raw_segments)
+        else:
+            segment_values = parse_work_segments(
+                [
+                    {"start": schedule["morning_start"], "end": schedule["lunch_start"]},
+                    {"start": schedule["afternoon_start"], "end": schedule["off_work"]},
+                ]
+            )
+        self.work_segments = [
+            (parse_clock(item["start"]), parse_clock(item["end"]))
+            for item in segment_values
+        ]
+        self.morning_start = self.work_segments[0][0]
+        self.lunch_start = self.work_segments[0][1]
+        self.afternoon_start = self.work_segments[1][0] if len(self.work_segments) > 1 else self.work_segments[0][1]
+        self.off_work = self.work_segments[-1][1]
+        overtime_value = schedule.get("overtime_end")
+        self.overtime_end = parse_clock(overtime_value) if overtime_value not in (None, "") else None
+        if self.overtime_end is not None and self.overtime_end <= self.off_work:
+            raise ValueError("加班结束时间必须晚于正常下班时间")
 
     def at(self, target_date, target_time):
         return datetime.combine(target_date, target_time)
 
     def morning_range_text(self):
-        return f"{format_clock(self.morning_start)} - {format_clock(self.lunch_start)}"
+        start, end = self.work_segments[0]
+        return f"{format_clock(start)} - {format_clock(end)}"
 
     def afternoon_range_text(self):
-        return f"{format_clock(self.afternoon_start)} - {format_clock(self.off_work)}"
+        if len(self.work_segments) < 2:
+            return "-"
+        start, end = self.work_segments[1]
+        return f"{format_clock(start)} - {format_clock(end)}"
 
     def progress(self, now, calendar):
         """Return the elapsed fraction of the workday, clamped to 0..1."""
@@ -433,39 +507,43 @@ class WorkSchedule:
                 "countdown_at": self.at(next_day, self.morning_start),
             }
 
-        morning_start = self.at(today, self.morning_start)
-        lunch_start = self.at(today, self.lunch_start)
-        afternoon_start = self.at(today, self.afternoon_start)
-        off_work = self.at(today, self.off_work)
-
-        if now < morning_start:
+        segments = [(self.at(today, start), self.at(today, end)) for start, end in self.work_segments]
+        if now < segments[0][0]:
             return {
                 "kind": "before_work",
                 "status": "未上班",
                 "countdown_name": "距离上班",
-                "countdown_at": morning_start,
+                "countdown_at": segments[0][0],
             }
-        if now < lunch_start:
-            return {
-                "kind": "morning",
-                "status": "上午上班",
-                "countdown_name": "距离午休",
-                "countdown_at": lunch_start,
-            }
-        if now < afternoon_start:
-            return {
-                "kind": "lunch",
-                "status": "午休中",
-                "countdown_name": "下午上班",
-                "countdown_at": afternoon_start,
-            }
-        if now < off_work:
-            return {
-                "kind": "afternoon",
-                "status": "下午上班",
-                "countdown_name": "距离下班",
-                "countdown_at": off_work,
-            }
+
+        for index, (start, end) in enumerate(segments):
+            if now < start:
+                is_lunch = index == 1
+                return {
+                    "kind": "lunch" if is_lunch else "break",
+                    "status": "午休中" if is_lunch else "休息中",
+                    "countdown_name": "下午上班" if is_lunch else "下一段工作",
+                    "countdown_at": start,
+                }
+            if now < end:
+                is_first = index == 0
+                countdown_at = segments[index + 1][0] if index + 1 < len(segments) else end
+                return {
+                    "kind": "morning" if is_first else "afternoon",
+                    "status": "上午上班" if is_first else "下午上班",
+                    "countdown_name": "距离午休" if index == 0 and len(segments) > 1 else "距离下班",
+                    "countdown_at": countdown_at,
+                }
+
+        if self.overtime_end is not None:
+            overtime_end = self.at(today, self.overtime_end)
+            if now < overtime_end:
+                return {
+                    "kind": "overtime",
+                    "status": "加班中",
+                    "countdown_name": "距离加班结束",
+                    "countdown_at": overtime_end,
+                }
 
         next_day = calendar.next_workday(today + timedelta(days=1))
         return {
@@ -881,6 +959,61 @@ class CountdownWidget:
             fg=muted,
             font=("Microsoft YaHei UI", 8),
         ).grid(row=2, column=0, columnspan=4, padx=5, pady=(3, 0), sticky="w")
+        schedule_config = self.config["schedule"]
+        flexible_schedule_var = tk.BooleanVar(value=bool(schedule_config.get("work_segments")))
+        tk.Checkbutton(
+            schedule_frame,
+            text="使用自定义工作时段（每行：开始 - 结束）",
+            variable=flexible_schedule_var,
+            bg=background,
+            fg=foreground,
+            activebackground=background,
+            activeforeground=foreground,
+            selectcolor="#26313A",
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=3, column=0, columnspan=4, padx=5, pady=(8, 2), sticky="w")
+        segments_text = tk.Text(
+            schedule_frame,
+            width=34,
+            height=3,
+            font=("Consolas", 9),
+            relief="flat",
+            wrap="none",
+        )
+        segments_text.grid(row=4, column=0, columnspan=4, padx=5, pady=(2, 0), sticky="we")
+        segments_text.insert("1.0", format_work_segments(schedule_config.get("work_segments") or [
+            {"start": schedule_config["morning_start"], "end": schedule_config["lunch_start"]},
+            {"start": schedule_config["afternoon_start"], "end": schedule_config["off_work"]},
+        ]))
+        tk.Label(
+            schedule_frame,
+            text="最多支持 4 段；关闭自定义模式时使用上方四个经典时间。",
+            bg=background,
+            fg=muted,
+            font=("Microsoft YaHei UI", 8),
+        ).grid(row=5, column=0, columnspan=4, padx=5, pady=(3, 0), sticky="w")
+        overtime_var = tk.StringVar(value=str(schedule_config.get("overtime_end") or ""))
+        tk.Label(
+            schedule_frame,
+            text="加班结束",
+            bg=background,
+            fg=foreground,
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=6, column=0, padx=5, pady=(8, 0), sticky="w")
+        tk.Entry(
+            schedule_frame,
+            textvariable=overtime_var,
+            width=9,
+            font=("Consolas", 11),
+            relief="flat",
+        ).grid(row=6, column=1, padx=5, pady=(8, 0), sticky="w")
+        tk.Label(
+            schedule_frame,
+            text="留空表示不追踪加班时间",
+            bg=background,
+            fg=muted,
+            font=("Microsoft YaHei UI", 8),
+        ).grid(row=6, column=2, columnspan=2, padx=5, pady=(8, 0), sticky="w")
 
         calendar_frame = tk.LabelFrame(
             shell,
@@ -1162,7 +1295,19 @@ class CountdownWidget:
         def save_settings():
             try:
                 candidate = deepcopy(self.config)
-                candidate["schedule"] = {key: value.get().strip() for key, value in schedule_values.items()}
+                schedule_candidate = {key: value.get().strip() for key, value in schedule_values.items()}
+                if flexible_schedule_var.get():
+                    segments = parse_work_segments(segments_text.get("1.0", "end"))
+                    schedule_candidate["work_segments"] = segments
+                    schedule_candidate["morning_start"] = segments[0]["start"]
+                    schedule_candidate["lunch_start"] = segments[0]["end"]
+                    schedule_candidate["afternoon_start"] = segments[1]["start"] if len(segments) > 1 else segments[0]["end"]
+                    schedule_candidate["off_work"] = segments[-1]["end"]
+                else:
+                    schedule_candidate.pop("work_segments", None)
+                overtime_value = overtime_var.get().strip()
+                schedule_candidate["overtime_end"] = format_clock(parse_clock(overtime_value)) if overtime_value else None
+                candidate["schedule"] = schedule_candidate
                 candidate["calendar"]["weekend_rest"] = bool(weekend_var.get())
                 candidate["calendar"]["holiday_dates"] = parse_date_list(holiday_text.get("1.0", "end"))
                 candidate["calendar"]["workday_overrides"] = parse_date_list(workday_text.get("1.0", "end"))
@@ -1346,7 +1491,9 @@ class CountdownWidget:
             "before_work": self.config["style"]["accent"],
             "morning": "#51D88A",
             "lunch": "#F5B84B",
+            "break": "#F5B84B",
             "afternoon": self.config["style"]["accent"],
+            "overtime": "#F97316",
             "off_work": "#A78BFA",
         }
         self.status_value.configure(

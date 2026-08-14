@@ -66,6 +66,25 @@ class WorkCountdownTests(unittest.TestCase):
             with self.subTest(expected_kind=expected_kind):
                 self.assertEqual(self.schedule.state(moment, self.calendar)["kind"], expected_kind)
 
+    def test_flexible_segments_and_overtime(self):
+        config = deepcopy(self.config)
+        config["schedule"]["work_segments"] = [
+            {"start": "08:30", "end": "11:30"},
+            {"start": "12:30", "end": "15:00"},
+            {"start": "16:00", "end": "18:00"},
+        ]
+        config["schedule"]["overtime_end"] = "20:00"
+        schedule = app.WorkSchedule(config)
+        self.assertEqual(schedule.state(datetime(2026, 8, 14, 12, 0), self.calendar)["kind"], "lunch")
+        self.assertEqual(schedule.state(datetime(2026, 8, 14, 15, 30), self.calendar)["kind"], "break")
+        self.assertEqual(schedule.state(datetime(2026, 8, 14, 19, 0), self.calendar)["kind"], "overtime")
+
+    def test_legacy_schedule_still_works(self):
+        config = deepcopy(self.config)
+        config["schedule"].pop("work_segments", None)
+        schedule = app.WorkSchedule(config)
+        self.assertEqual(schedule.morning_range_text(), "09:00 - 12:00")
+
     def test_progress_is_clamped(self):
         self.assertEqual(self.schedule.progress(datetime(2026, 8, 14, 8, 0), self.calendar), 0.0)
         self.assertAlmostEqual(self.schedule.progress(datetime(2026, 8, 14, 13, 30), self.calendar), 0.5)
@@ -75,6 +94,17 @@ class WorkCountdownTests(unittest.TestCase):
         legacy = {"lunch_time": "12:30", "off_work_time": "18:30"}
         migrated = app.migrate_legacy_config(legacy)
         self.assertEqual(migrated["schedule"]["lunch_start"], "12:30")
+        self.assertEqual(migrated["schedule"]["work_segments"][0]["start"], "10:30")
+        modern_classic = {"schedule": {
+            "morning_start": "10:00",
+            "lunch_start": "12:00",
+            "afternoon_start": "13:00",
+            "off_work": "18:00",
+        }}
+        self.assertEqual(
+            app.migrate_legacy_config(modern_classic)["schedule"]["work_segments"][0]["start"],
+            "10:00",
+        )
         merged = app.deep_merge(app.DEFAULT_CONFIG, {"display": {"compact": True}})
         self.assertTrue(merged["display"]["compact"])
         self.assertTrue(merged["display"]["show_seconds"])
