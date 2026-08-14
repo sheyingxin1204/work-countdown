@@ -3,10 +3,12 @@ $ErrorActionPreference = "Stop"
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Push-Location $projectDir
 try {
-    $exePath = Join-Path $projectDir "dist\班时钟.exe"
-    if (Test-Path $exePath) {
+    $existingExe = Get-ChildItem -LiteralPath (Join-Path $projectDir "dist") -Filter "*.exe" -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($existingExe) {
         $running = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-            Where-Object { $_.ExecutablePath -eq $exePath }
+            Where-Object { $_.ExecutablePath -eq $existingExe.FullName }
         if ($running) {
             throw "Please close the existing Ban Clock.exe before building."
         }
@@ -22,7 +24,18 @@ try {
         throw "PyInstaller build failed."
     }
 
-    Write-Host "Built: $projectDir\dist\班时钟.exe"
+    # Keep an ASCII-named copy for GitHub Release assets and update discovery;
+    # the installer still packages the Chinese display name below.
+    $localizedExe = Get-ChildItem -LiteralPath (Join-Path $projectDir "dist") -Filter "*.exe" -File |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1 -ExpandProperty FullName
+    $releaseExe = Join-Path $projectDir "dist\BanClock.exe"
+    if (-not $localizedExe) {
+        throw "PyInstaller did not produce an EXE in dist."
+    }
+    Copy-Item -LiteralPath $localizedExe -Destination $releaseExe -Force
+
+    Write-Host "Built: $localizedExe"
 }
 finally {
     Pop-Location

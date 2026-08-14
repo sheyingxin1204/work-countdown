@@ -4,7 +4,7 @@ $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $distDir = Join-Path $projectDir "dist"
 $installerDir = Join-Path $projectDir "installer"
 $outputPath = Join-Path $distDir "SHA256SUMS.txt"
-$assets = @(Get-ChildItem -LiteralPath $distDir -Filter "*.exe" -File)
+$assets = @(Get-ChildItem -LiteralPath $distDir -Filter "BanClock.exe" -File)
 if (Test-Path -LiteralPath $installerDir) {
     $assets += Get-ChildItem -LiteralPath $installerDir -Filter "*.exe" -File
 }
