@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "year": 2026,
+  "holiday_dates": [
+    "2026-01-01",
+    "2026-02-17"
+  ],
+  "workday_overrides": [
+    "2026-02-14"
+  ]
+}

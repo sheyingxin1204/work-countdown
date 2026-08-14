@@ -27,6 +27,24 @@ class WorkCountdownTests(unittest.TestCase):
             ["2026-10-01", "2026-10-02"],
         )
 
+    def test_calendar_conflict_is_rejected(self):
+        with self.assertRaises(ValueError):
+            app.normalize_calendar_dates(["2026-10-01"], ["2026-10-01"])
+
+    def test_calendar_json_round_trip(self):
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "calendar.json"
+            app.write_calendar_file(
+                path,
+                ["2026-10-01", "2026-10-02"],
+                ["2026-10-10"],
+                2026,
+            )
+            loaded = app.read_calendar_file(path)
+            self.assertEqual(loaded["year"], 2026)
+            self.assertEqual(loaded["holiday_dates"], ["2026-10-01", "2026-10-02"])
+            self.assertEqual(loaded["workday_overrides"], ["2026-10-10"])
+
     def test_calendar_holiday_and_workday_override(self):
         saturday = date(2026, 8, 15)
         self.config["calendar"]["weekend_rest"] = True

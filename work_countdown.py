@@ -13,7 +13,7 @@ from copy import deepcopy
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 from logging.handlers import RotatingFileHandler
 
 try:
@@ -281,6 +281,65 @@ def format_date_list(values):
     return "\n".join(parse_date_list(values))
 
 
+def normalize_calendar_dates(holiday_dates, workday_overrides):
+    """Normalize calendar dates and reject contradictory overrides."""
+    holidays = parse_date_list(holiday_dates)
+    workdays = parse_date_list(workday_overrides)
+    overlap = sorted(set(holidays) & set(workdays))
+    if overlap:
+        raise ValueError(f"同一日期不能同时设置为节假日和调休工作日: {', '.join(overlap)}")
+    return holidays, workdays
+
+
+def read_calendar_file(path):
+    """Read an annual calendar JSON file used by the settings center."""
+    calendar_path = Path(path)
+    with calendar_path.open("r", encoding="utf-8") as calendar_file:
+        payload = json.load(calendar_file)
+    if isinstance(payload, dict) and isinstance(payload.get("calendar"), dict):
+        payload = payload["calendar"]
+    if not isinstance(payload, dict):
+        raise ValueError("日历文件必须是 JSON 对象")
+
+    holidays, workdays = normalize_calendar_dates(
+        payload.get("holiday_dates", []),
+        payload.get("workday_overrides", []),
+    )
+    year = payload.get("year")
+    if year not in (None, ""):
+        try:
+            year = int(year)
+        except (TypeError, ValueError) as error:
+            raise ValueError("日历年份必须是数字") from error
+        if year < 1900 or year > 2200:
+            raise ValueError("日历年份必须在 1900 到 2200 之间")
+    return {
+        "year": year,
+        "holiday_dates": holidays,
+        "workday_overrides": workdays,
+    }
+
+
+def write_calendar_file(path, holiday_dates, workday_overrides, year=None):
+    """Export normalized calendar data as a portable JSON file."""
+    holidays, workdays = normalize_calendar_dates(holiday_dates, workday_overrides)
+    if year in (None, ""):
+        all_dates = [parse_date(item) for item in holidays + workdays]
+        years = {item.year for item in all_dates}
+        year = next(iter(years)) if len(years) == 1 else None
+    payload = {
+        "version": 1,
+        "year": year,
+        "holiday_dates": holidays,
+        "workday_overrides": workdays,
+    }
+    calendar_path = Path(path)
+    calendar_path.parent.mkdir(parents=True, exist_ok=True)
+    with calendar_path.open("w", encoding="utf-8") as calendar_file:
+        json.dump(payload, calendar_file, ensure_ascii=False, indent=2)
+        calendar_file.write("\n")
+
+
 def format_remaining(delta):
     seconds = max(0, int(delta.total_seconds()))
     hours, seconds = divmod(seconds, 3600)
@@ -305,8 +364,11 @@ class WorkCalendar:
     def __init__(self, config):
         calendar = config["calendar"]
         self.weekend_rest = bool(calendar["weekend_rest"])
-        self.holiday_dates = {parse_date(value) for value in parse_date_list(calendar["holiday_dates"])}
-        self.workday_overrides = {parse_date(value) for value in parse_date_list(calendar["workday_overrides"])}
+        holiday_dates, workday_overrides = normalize_calendar_dates(
+            calendar["holiday_dates"], calendar["workday_overrides"]
+        )
+        self.holiday_dates = {parse_date(value) for value in holiday_dates}
+        self.workday_overrides = {parse_date(value) for value in workday_overrides}
 
     def is_workday(self, target_date):
         if target_date in self.workday_overrides:
@@ -842,6 +904,21 @@ class CountdownWidget:
             selectcolor="#26313A",
             font=("Microsoft YaHei UI", 9),
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        tk.Label(
+            calendar_frame,
+            text="年度",
+            bg=background,
+            fg=foreground,
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=0, column=2, padx=(12, 4), pady=(0, 6), sticky="e")
+        calendar_year_var = tk.StringVar(value=str(datetime.now().year))
+        tk.Entry(
+            calendar_frame,
+            textvariable=calendar_year_var,
+            width=8,
+            font=("Consolas", 10),
+            relief="flat",
+        ).grid(row=0, column=3, pady=(0, 6), sticky="w")
 
         tk.Label(
             calendar_frame,
@@ -885,6 +962,73 @@ class CountdownWidget:
             fg=muted,
             font=("Microsoft YaHei UI", 8),
         ).grid(row=3, column=0, columnspan=2, padx=0, pady=(5, 0), sticky="w")
+
+        def import_calendar():
+            path = filedialog.askopenfilename(
+                parent=dialog,
+                title="导入年度日历",
+                filetypes=(("日历 JSON", "*.json"), ("所有文件", "*.*")),
+            )
+            if not path:
+                return
+            try:
+                imported = read_calendar_file(path)
+            except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+                messagebox.showerror("日历文件无效", str(error), parent=dialog)
+                return
+            holiday_text.delete("1.0", "end")
+            holiday_text.insert("1.0", format_date_list(imported["holiday_dates"]))
+            workday_text.delete("1.0", "end")
+            workday_text.insert("1.0", format_date_list(imported["workday_overrides"]))
+            if imported["year"] is not None:
+                calendar_year_var.set(str(imported["year"]))
+
+        def export_calendar():
+            try:
+                year_value = calendar_year_var.get().strip() or None
+                if year_value is not None:
+                    year_value = int(year_value)
+                holidays, workdays = normalize_calendar_dates(
+                    holiday_text.get("1.0", "end"),
+                    workday_text.get("1.0", "end"),
+                )
+            except (TypeError, ValueError) as error:
+                messagebox.showerror("日历设置无效", str(error), parent=dialog)
+                return
+            path = filedialog.asksaveasfilename(
+                parent=dialog,
+                title="导出年度日历",
+                initialfile=f"work-calendar-{year_value or datetime.now().year}.json",
+                defaultextension=".json",
+                filetypes=(("日历 JSON", "*.json"), ("所有文件", "*.*")),
+            )
+            if not path:
+                return
+            try:
+                write_calendar_file(path, holidays, workdays, year_value)
+            except (OSError, TypeError, ValueError) as error:
+                messagebox.showerror("导出日历失败", str(error), parent=dialog)
+                return
+            messagebox.showinfo("导出完成", f"日历已保存到：\n{path}", parent=dialog)
+
+        calendar_actions = tk.Frame(calendar_frame, bg=background)
+        calendar_actions.grid(row=4, column=0, columnspan=4, pady=(8, 0), sticky="w")
+        tk.Button(
+            calendar_actions,
+            text="导入年度日历",
+            command=import_calendar,
+            relief="flat",
+            padx=8,
+            pady=3,
+        ).pack(side="left")
+        tk.Button(
+            calendar_actions,
+            text="导出当前日历",
+            command=export_calendar,
+            relief="flat",
+            padx=8,
+            pady=3,
+        ).pack(side="left", padx=(8, 0))
 
         display_frame = tk.LabelFrame(
             shell,
