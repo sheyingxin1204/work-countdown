@@ -186,6 +186,20 @@ def parse_date(value):
         raise ValueError(f"日期格式无效: {value}") from error
 
 
+def parse_date_list(value):
+    """Parse comma- or line-separated ISO dates into a normalized list."""
+    if isinstance(value, (list, tuple, set)):
+        values = value
+    else:
+        values = str(value).replace(",", "\n").splitlines()
+    parsed = sorted({parse_date(str(item).strip()) for item in values if str(item).strip()})
+    return [item.isoformat() for item in parsed]
+
+
+def format_date_list(values):
+    return "\n".join(parse_date_list(values))
+
+
 def format_remaining(delta):
     seconds = max(0, int(delta.total_seconds()))
     hours, seconds = divmod(seconds, 3600)
@@ -201,8 +215,8 @@ class WorkCalendar:
     def __init__(self, config):
         calendar = config["calendar"]
         self.weekend_rest = bool(calendar["weekend_rest"])
-        self.holiday_dates = {parse_date(value) for value in calendar["holiday_dates"]}
-        self.workday_overrides = {parse_date(value) for value in calendar["workday_overrides"]}
+        self.holiday_dates = {parse_date(value) for value in parse_date_list(calendar["holiday_dates"])}
+        self.workday_overrides = {parse_date(value) for value in parse_date_list(calendar["workday_overrides"])}
 
     def is_workday(self, target_date):
         if target_date in self.workday_overrides:
@@ -302,6 +316,7 @@ class CountdownWidget:
         self.tray_icon = None
         self.tray_thread = None
         self.is_closing = False
+        self.settings_dialog = None
 
         self.root = tk.Tk()
         self.root.title(APP_NAME)
@@ -356,7 +371,7 @@ class CountdownWidget:
         self.clock_label.grid(row=5, column=0, columnspan=2, sticky="e", pady=(8, 0))
 
         self.menu = tk.Menu(self.root, tearoff=0)
-        self.menu.add_command(label="设置上下班时间", command=self.open_schedule_settings)
+        self.menu.add_command(label="打开设置中心", command=self.open_schedule_settings)
         self.menu.add_command(label="重新加载配置", command=self.reload_config)
         self.menu.add_separator()
         self.menu.add_command(label="隐藏到系统托盘", command=self.hide_window)
@@ -492,7 +507,7 @@ class CountdownWidget:
                     default=True,
                 ),
                 pystray.MenuItem(
-                    "设置上下班时间",
+                    "打开设置中心",
                     lambda _icon, _item: self.call_on_ui(self.open_schedule_from_tray),
                 ),
                 pystray.MenuItem(
@@ -554,76 +569,282 @@ class CountdownWidget:
         self.open_schedule_settings()
 
     def open_schedule_settings(self):
+        if self.settings_dialog is not None and self.settings_dialog.winfo_exists():
+            self.settings_dialog.deiconify()
+            self.settings_dialog.lift()
+            return
+
+        background = self.config["style"]["background"]
+        foreground = self.config["style"]["foreground"]
+        muted = self.config["style"]["muted"]
+        accent = self.config["style"]["accent"]
+
         dialog = tk.Toplevel(self.root)
-        dialog.title("设置上下班时间")
+        self.settings_dialog = dialog
+        dialog.title(f"{APP_NAME} · 设置中心")
         dialog.transient(self.root)
         dialog.resizable(False, False)
-        dialog.configure(bg=self.config["style"]["background"])
+        dialog.configure(bg=background)
+        dialog.protocol("WM_DELETE_WINDOW", lambda: close_dialog())
         dialog.grab_set()
 
-        fields = (
+        shell = tk.Frame(dialog, bg=background, padx=22, pady=18)
+        shell.pack(fill="both", expand=True)
+
+        tk.Label(
+            shell,
+            text="设置中心",
+            bg=background,
+            fg=foreground,
+            font=("Microsoft YaHei UI", 16, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            shell,
+            text="调整工作时间、日历和悬浮窗行为，保存后立即生效。",
+            bg=background,
+            fg=muted,
+            font=("Microsoft YaHei UI", 9),
+        ).pack(anchor="w", pady=(4, 14))
+
+        schedule_frame = tk.LabelFrame(
+            shell,
+            text="工作时间",
+            bg=background,
+            fg=foreground,
+            font=("Microsoft YaHei UI", 10, "bold"),
+            padx=12,
+            pady=8,
+        )
+        schedule_frame.pack(fill="x", pady=(0, 12))
+        schedule_fields = (
             ("morning_start", "上午上班"),
             ("lunch_start", "午休开始"),
             ("afternoon_start", "下午上班"),
             ("off_work", "下午下班"),
         )
-        values = {}
-        for row, (key, label) in enumerate(fields):
+        schedule_values = {}
+        for column, (key, label) in enumerate(schedule_fields):
             tk.Label(
-                dialog,
+                schedule_frame,
                 text=label,
-                bg=self.config["style"]["background"],
-                fg=self.config["style"]["foreground"],
-                font=("Microsoft YaHei UI", 10),
-            ).grid(row=row, column=0, padx=(18, 10), pady=8, sticky="w")
+                bg=background,
+                fg=foreground,
+                font=("Microsoft YaHei UI", 9),
+            ).grid(row=0, column=column, padx=5, pady=(0, 4), sticky="w")
             value = tk.StringVar(value=self.config["schedule"][key])
-            values[key] = value
-            tk.Entry(dialog, textvariable=value, width=10, font=("Consolas", 11)).grid(
-                row=row, column=1, padx=(0, 18), pady=8
-            )
+            schedule_values[key] = value
+            tk.Entry(
+                schedule_frame,
+                textvariable=value,
+                width=9,
+                font=("Consolas", 11),
+                relief="flat",
+            ).grid(row=1, column=column, padx=5, pady=(0, 3), sticky="we")
+        tk.Label(
+            schedule_frame,
+            text="使用 24 小时制，例如 09:00；四个时间必须按顺序递增。",
+            bg=background,
+            fg=muted,
+            font=("Microsoft YaHei UI", 8),
+        ).grid(row=2, column=0, columnspan=4, padx=5, pady=(3, 0), sticky="w")
+
+        calendar_frame = tk.LabelFrame(
+            shell,
+            text="工作日历",
+            bg=background,
+            fg=foreground,
+            font=("Microsoft YaHei UI", 10, "bold"),
+            padx=12,
+            pady=8,
+        )
+        calendar_frame.pack(fill="x", pady=(0, 12))
+        weekend_var = tk.BooleanVar(value=bool(self.config["calendar"]["weekend_rest"]))
+        tk.Checkbutton(
+            calendar_frame,
+            text="周末默认休息",
+            variable=weekend_var,
+            bg=background,
+            fg=foreground,
+            activebackground=background,
+            activeforeground=foreground,
+            selectcolor="#26313A",
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
         tk.Label(
-            dialog,
-            text="请使用 24 小时制，例如 10:30",
-            bg=self.config["style"]["background"],
-            fg=self.config["style"]["muted"],
+            calendar_frame,
+            text="节假日（每行一个日期）",
+            bg=background,
+            fg=foreground,
             font=("Microsoft YaHei UI", 9),
-        ).grid(row=len(fields), column=0, columnspan=2, padx=18, pady=(4, 10), sticky="w")
+        ).grid(row=1, column=0, padx=(0, 8), sticky="nw")
+        holiday_text = tk.Text(
+            calendar_frame,
+            width=24,
+            height=4,
+            font=("Consolas", 9),
+            relief="flat",
+            wrap="none",
+        )
+        holiday_text.grid(row=2, column=0, padx=(0, 8), pady=(3, 0), sticky="we")
+        holiday_text.insert("1.0", format_date_list(self.config["calendar"]["holiday_dates"]))
 
-        def save_schedule():
-            schedule = {key: value.get().strip() for key, value in values.items()}
+        tk.Label(
+            calendar_frame,
+            text="调休工作日（每行一个日期）",
+            bg=background,
+            fg=foreground,
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=1, column=1, padx=(8, 0), sticky="nw")
+        workday_text = tk.Text(
+            calendar_frame,
+            width=24,
+            height=4,
+            font=("Consolas", 9),
+            relief="flat",
+            wrap="none",
+        )
+        workday_text.grid(row=2, column=1, padx=(8, 0), pady=(3, 0), sticky="we")
+        workday_text.insert("1.0", format_date_list(self.config["calendar"]["workday_overrides"]))
+        tk.Label(
+            calendar_frame,
+            text="日期格式：YYYY-MM-DD",
+            bg=background,
+            fg=muted,
+            font=("Microsoft YaHei UI", 8),
+        ).grid(row=3, column=0, columnspan=2, padx=0, pady=(5, 0), sticky="w")
+
+        display_frame = tk.LabelFrame(
+            shell,
+            text="悬浮窗",
+            bg=background,
+            fg=foreground,
+            font=("Microsoft YaHei UI", 10, "bold"),
+            padx=12,
+            pady=8,
+        )
+        display_frame.pack(fill="x", pady=(0, 14))
+        topmost_var = tk.BooleanVar(value=bool(self.config["window"]["always_on_top"]))
+        tk.Checkbutton(
+            display_frame,
+            text="始终置顶",
+            variable=topmost_var,
+            bg=background,
+            fg=foreground,
+            activebackground=background,
+            activeforeground=foreground,
+            selectcolor="#26313A",
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=0, column=0, sticky="w")
+        tk.Label(
+            display_frame,
+            text="透明度",
+            bg=background,
+            fg=foreground,
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=1, column=0, pady=(8, 0), sticky="w")
+        alpha_var = tk.DoubleVar(value=float(self.config["window"]["alpha"]))
+        tk.Scale(
+            display_frame,
+            from_=0.55,
+            to=1.0,
+            resolution=0.05,
+            orient="horizontal",
+            variable=alpha_var,
+            showvalue=True,
+            length=250,
+            bg=background,
+            fg=foreground,
+            troughcolor="#26313A",
+            highlightthickness=0,
+            activebackground=accent,
+        ).grid(row=1, column=1, padx=(12, 0), pady=(5, 0), sticky="w")
+        tk.Label(
+            display_frame,
+            text="右下角边距",
+            bg=background,
+            fg=foreground,
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=2, column=0, pady=(8, 0), sticky="w")
+        margin_var = tk.IntVar(value=int(self.config["window"].get("margin", 18)))
+        tk.Spinbox(
+            display_frame,
+            from_=8,
+            to=64,
+            textvariable=margin_var,
+            width=6,
+            font=("Consolas", 10),
+            relief="flat",
+        ).grid(row=2, column=1, padx=(12, 0), pady=(8, 0), sticky="w")
+
+        actions = tk.Frame(shell, bg=background)
+        actions.pack(fill="x")
+
+        def close_dialog():
+            self.settings_dialog = None
             try:
-                candidate = deepcopy(self.config)
-                candidate["schedule"] = schedule
-                new_schedule = WorkSchedule(candidate)
-            except ValueError as error:
-                messagebox.showerror("时间设置无效", str(error), parent=dialog)
-                return
-
-            self.config["schedule"] = schedule
-            self.schedule = new_schedule
-            save_config(self.config)
-            self.refresh_static_ranges()
-            self.update_display()
+                dialog.grab_release()
+            except tk.TclError:
+                pass
             dialog.destroy()
 
-        actions = tk.Frame(dialog, bg=self.config["style"]["background"])
-        actions.grid(row=len(fields) + 1, column=0, columnspan=2, pady=(0, 16))
-        tk.Button(actions, text="取消", command=dialog.destroy, width=9).pack(side="left", padx=5)
-        tk.Button(actions, text="保存", command=save_schedule, width=9).pack(side="left", padx=5)
-        dialog.bind("<Return>", lambda _event: save_schedule())
-        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        def save_settings():
+            try:
+                candidate = deepcopy(self.config)
+                candidate["schedule"] = {key: value.get().strip() for key, value in schedule_values.items()}
+                candidate["calendar"]["weekend_rest"] = bool(weekend_var.get())
+                candidate["calendar"]["holiday_dates"] = parse_date_list(holiday_text.get("1.0", "end"))
+                candidate["calendar"]["workday_overrides"] = parse_date_list(workday_text.get("1.0", "end"))
+                candidate["window"]["alpha"] = round(float(alpha_var.get()), 2)
+                candidate["window"]["always_on_top"] = bool(topmost_var.get())
+                candidate["window"]["margin"] = max(8, min(64, int(margin_var.get())))
+                WorkSchedule(candidate)
+                WorkCalendar(candidate)
+                save_config(candidate)
+            except (TypeError, ValueError, OSError) as error:
+                messagebox.showerror("设置无效", str(error), parent=dialog)
+                return
+
+            self.apply_config(candidate)
+            close_dialog()
+
+        tk.Button(
+            actions,
+            text="取消",
+            command=close_dialog,
+            width=10,
+            relief="flat",
+            padx=8,
+            pady=5,
+        ).pack(side="right", padx=(8, 0))
+        tk.Button(
+            actions,
+            text="保存设置",
+            command=save_settings,
+            width=10,
+            relief="flat",
+            bg=accent,
+            fg="#FFFFFF",
+            activebackground=accent,
+            activeforeground="#FFFFFF",
+            padx=8,
+            pady=5,
+        ).pack(side="right")
+        dialog.bind("<Escape>", lambda _event: close_dialog())
+
+    def apply_config(self, config):
+        self.config = config
+        self.calendar = WorkCalendar(self.config)
+        self.schedule = WorkSchedule(self.config)
+        self.root.attributes("-alpha", float(self.config["window"]["alpha"]))
+        self.root.attributes("-topmost", bool(self.config["window"]["always_on_top"]))
+        self.refresh_static_ranges()
+        self.place_window()
+        self.update_display()
 
     def reload_config(self):
         try:
-            self.config = load_config()
-            self.calendar = WorkCalendar(self.config)
-            self.schedule = WorkSchedule(self.config)
-            self.root.attributes("-alpha", float(self.config["window"]["alpha"]))
-            self.root.attributes("-topmost", bool(self.config["window"]["always_on_top"]))
-            self.refresh_static_ranges()
-            self.place_window()
-            self.update_display()
+            self.apply_config(load_config())
         except (KeyError, TypeError, ValueError) as error:
             messagebox.showerror("配置无效", str(error), parent=self.root)
 
@@ -644,6 +865,11 @@ class CountdownWidget:
         if self.is_closing:
             return
         self.is_closing = True
+        if self.settings_dialog is not None:
+            try:
+                self.settings_dialog.destroy()
+            except tk.TclError:
+                pass
         self.save_position()
         if self.tray_icon is not None:
             try:
