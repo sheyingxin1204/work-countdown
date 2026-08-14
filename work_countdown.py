@@ -7,17 +7,25 @@ import re
 import shutil
 import subprocess
 import sys
-import threading
 import tempfile
+import threading
+import tkinter as tk
 import urllib.error
 import urllib.request
 import webbrowser
 from copy import deepcopy
 from datetime import date, datetime, time, timedelta
-from pathlib import Path
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
+
+from holiday_sync import (
+    HOLIDAY_SOURCE_URL,
+    fetch_holiday_calendar,
+    read_calendar_cache,
+    write_calendar_cache,
+)
+from work_core import WorkCalendar, WorkSchedule
 
 try:
     import pystray
@@ -451,7 +459,8 @@ def latest_release_url():
     return f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
 
 
-from work_core import WorkCalendar, WorkSchedule
+def holiday_cache_path(year):
+    return USER_CONFIG_DIR / "holiday-cache" / f"{int(year)}.json"
 
 
 class CountdownWidget:
@@ -1087,6 +1096,82 @@ class CountdownWidget:
                 return
             messagebox.showinfo("导出完成", f"日历已保存到：\n{path}", parent=dialog)
 
+        def sync_calendar():
+            try:
+                year_value = int(calendar_year_var.get().strip() or datetime.now().year)
+                if year_value < 1900 or year_value > 2200:
+                    raise ValueError("日历年份必须在 1900 到 2200 之间")
+            except (TypeError, ValueError) as error:
+                messagebox.showerror("日历设置无效", str(error), parent=dialog)
+                return
+
+            sync_button.configure(state="disabled")
+
+            def finish(result, used_cache=False, error=None):
+                try:
+                    if not dialog.winfo_exists():
+                        return
+                    sync_button.configure(state="normal")
+                except tk.TclError:
+                    return
+                if error is not None:
+                    messagebox.showerror("同步官方日历失败", str(error), parent=dialog)
+                    return
+
+                try:
+                    current_holidays = set(parse_date_list(holiday_text.get("1.0", "end")))
+                    current_workdays = set(parse_date_list(workday_text.get("1.0", "end")))
+                    merged_holidays = current_holidays | set(result["holiday_dates"])
+                    merged_workdays = current_workdays | set(result["workday_overrides"])
+                    # A workday override is the explicit, higher-priority
+                    # choice when a hand-edited date conflicts with a source
+                    # holiday entry.
+                    merged_holidays -= merged_workdays
+                    holiday_text.delete("1.0", "end")
+                    holiday_text.insert("1.0", format_date_list(merged_holidays))
+                    workday_text.delete("1.0", "end")
+                    workday_text.insert("1.0", format_date_list(merged_workdays))
+                    calendar_year_var.set(str(result["year"]))
+                except (TypeError, ValueError) as merge_error:
+                    messagebox.showerror("同步日历失败", str(merge_error), parent=dialog)
+                    return
+
+                source_name = "本地缓存（网络不可用）" if used_cache else "在线数据"
+                papers = result.get("papers") or []
+                paper_text = f"\n公告来源：{papers[0]}" if papers else ""
+                messagebox.showinfo(
+                    "同步完成",
+                    f"已合并 {result['year']} 年官方日历（{source_name}）。\n"
+                    f"节假日 {len(result['holiday_dates'])} 天，调休工作日 {len(result['workday_overrides'])} 天。"
+                    f"{paper_text}\n\n请点击“保存设置”使日历生效。",
+                    parent=dialog,
+                )
+
+            def worker():
+                try:
+                    result = fetch_holiday_calendar(year_value, HOLIDAY_SOURCE_URL)
+                    try:
+                        write_calendar_cache(holiday_cache_path(year_value), result)
+                    except OSError:
+                        LOGGER.warning("无法写入官方日历缓存", exc_info=True)
+                    self.root.after(0, lambda: finish(result))
+                    return
+                except Exception as network_error:  # noqa: BLE001 - fall back to a validated cache.
+                    try:
+                        result = read_calendar_cache(holiday_cache_path(year_value), year_value)
+                    except Exception as cache_error:  # noqa: BLE001 - report both useful causes.
+                        error_message = (
+                            f"在线同步失败：{network_error}\n本地缓存也不可用：{cache_error}"
+                        )
+                        self.root.after(
+                            0,
+                            lambda message=error_message: finish(None, error=message),
+                        )
+                        return
+                    self.root.after(0, lambda: finish(result, used_cache=True))
+
+            threading.Thread(target=worker, name="holiday-sync", daemon=True).start()
+
         calendar_actions = tk.Frame(calendar_frame, bg=background)
         calendar_actions.grid(row=4, column=0, columnspan=4, pady=(8, 0), sticky="w")
         tk.Button(
@@ -1105,6 +1190,22 @@ class CountdownWidget:
             padx=8,
             pady=3,
         ).pack(side="left", padx=(8, 0))
+        sync_button = tk.Button(
+            calendar_actions,
+            text="同步官方日历",
+            command=sync_calendar,
+            relief="flat",
+            padx=8,
+            pady=3,
+        )
+        sync_button.pack(side="left", padx=(8, 0))
+        tk.Label(
+            calendar_frame,
+            text="数据来自国务院公告的开源镜像；同步会合并当前手动日期，调休工作日优先。",
+            bg=background,
+            fg=muted,
+            font=("Microsoft YaHei UI", 8),
+        ).grid(row=5, column=0, columnspan=4, padx=0, pady=(5, 0), sticky="w")
 
         display_frame = tk.LabelFrame(
             display_tab,
@@ -1278,9 +1379,21 @@ class CountdownWidget:
         quiet_time_frame = tk.Frame(notification_frame, bg=background)
         quiet_time_frame.grid(row=3, column=1, columnspan=2, padx=(0, 18), pady=2, sticky="w")
         tk.Label(quiet_time_frame, text="从", bg=background, fg=muted, font=("Microsoft YaHei UI", 9)).pack(side="left")
-        tk.Entry(quiet_time_frame, textvariable=quiet_start_var, width=7, font=("Consolas", 10), relief="flat").pack(side="left", padx=(4, 8))
+        tk.Entry(
+            quiet_time_frame,
+            textvariable=quiet_start_var,
+            width=7,
+            font=("Consolas", 10),
+            relief="flat",
+        ).pack(side="left", padx=(4, 8))
         tk.Label(quiet_time_frame, text="到", bg=background, fg=muted, font=("Microsoft YaHei UI", 9)).pack(side="left")
-        tk.Entry(quiet_time_frame, textvariable=quiet_end_var, width=7, font=("Consolas", 10), relief="flat").pack(side="left", padx=(4, 0))
+        tk.Entry(
+            quiet_time_frame,
+            textvariable=quiet_end_var,
+            width=7,
+            font=("Consolas", 10),
+            relief="flat",
+        ).pack(side="left", padx=(4, 0))
         tk.Button(
             notification_frame,
             text="发送测试提醒",
@@ -1310,12 +1423,16 @@ class CountdownWidget:
                     schedule_candidate["work_segments"] = segments
                     schedule_candidate["morning_start"] = segments[0]["start"]
                     schedule_candidate["lunch_start"] = segments[0]["end"]
-                    schedule_candidate["afternoon_start"] = segments[1]["start"] if len(segments) > 1 else segments[0]["end"]
+                    schedule_candidate["afternoon_start"] = (
+                        segments[1]["start"] if len(segments) > 1 else segments[0]["end"]
+                    )
                     schedule_candidate["off_work"] = segments[-1]["end"]
                 else:
                     schedule_candidate.pop("work_segments", None)
                 overtime_value = overtime_var.get().strip()
-                schedule_candidate["overtime_end"] = format_clock(parse_clock(overtime_value)) if overtime_value else None
+                schedule_candidate["overtime_end"] = (
+                    format_clock(parse_clock(overtime_value)) if overtime_value else None
+                )
                 candidate["schedule"] = schedule_candidate
                 candidate["calendar"]["weekend_rest"] = bool(weekend_var.get())
                 candidate["calendar"]["holiday_dates"] = parse_date_list(holiday_text.get("1.0", "end"))
@@ -1622,7 +1739,11 @@ class CountdownWidget:
             lead_delta = timedelta(minutes=lead_minutes)
             for event_key, event_at, title, message in self.schedule.notification_events(now.date(), self.calendar):
                 if event_at - lead_delta <= now < event_at:
-                    enabled = notifications.get("lunch", True) if event_key == "lunch" else notifications.get("off_work", True)
+                    enabled = (
+                        notifications.get("lunch", True)
+                        if event_key == "lunch"
+                        else notifications.get("off_work", True)
+                    )
                     if enabled:
                         self.send_notification_once(
                             ("lead", event_key),
