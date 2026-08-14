@@ -26,6 +26,7 @@ from holiday_sync import (
     write_calendar_cache,
 )
 from work_core import WorkCalendar, WorkSchedule
+from work_stats import StatsTracker
 
 try:
     import pystray
@@ -463,6 +464,10 @@ def holiday_cache_path(year):
     return USER_CONFIG_DIR / "holiday-cache" / f"{int(year)}.json"
 
 
+def stats_path():
+    return USER_CONFIG_DIR / "stats.json"
+
+
 class CountdownWidget:
     def __init__(self):
         self.config = load_config()
@@ -478,6 +483,8 @@ class CountdownWidget:
         self.last_state_kind = None
         self.last_state_date = None
         self.sent_alerts = set()
+        self.stats_tracker = StatsTracker(stats_path())
+        self.stats_dialog = None
 
         self.root = tk.Tk()
         try:
@@ -563,6 +570,7 @@ class CountdownWidget:
 
         self.menu = tk.Menu(self.root, tearoff=0)
         self.menu.add_command(label="打开设置中心", command=self.open_schedule_settings)
+        self.menu.add_command(label="工作统计", command=self.open_stats)
         self.menu.add_command(label="重新加载配置", command=self.reload_config)
         self.menu.add_command(label="检查更新", command=self.check_for_updates)
         self.menu.add_command(label="打开配置目录", command=self.open_config_folder)
@@ -752,6 +760,10 @@ class CountdownWidget:
                     lambda _icon, _item: self.call_on_ui(self.open_schedule_from_tray),
                 ),
                 pystray.MenuItem(
+                    "工作统计",
+                    lambda _icon, _item: self.call_on_ui(self.open_stats),
+                ),
+                pystray.MenuItem(
                     "重新加载配置",
                     lambda _icon, _item: self.call_on_ui(self.reload_config),
                 ),
@@ -817,6 +829,115 @@ class CountdownWidget:
     def open_schedule_from_tray(self):
         self.show_window()
         self.open_schedule_settings()
+
+    def open_stats(self):
+        if self.stats_dialog is not None and self.stats_dialog.winfo_exists():
+            self.stats_dialog.deiconify()
+            self.stats_dialog.lift()
+            return
+
+        now = datetime.now()
+        today = now.date()
+        week_start = today - timedelta(days=6)
+        month_start = today.replace(day=1)
+        background = self.config["style"]["background"]
+        foreground = self.config["style"]["foreground"]
+        muted = self.config["style"]["muted"]
+        accent = self.config["style"]["accent"]
+
+        dialog = tk.Toplevel(self.root)
+        self.stats_dialog = dialog
+        dialog.title(f"{APP_NAME} v{APP_VERSION} · 工作统计")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        dialog.configure(bg=background)
+
+        shell = tk.Frame(dialog, bg=background, padx=22, pady=18)
+        shell.pack(fill="both", expand=True)
+        tk.Label(
+            shell,
+            text="工作统计",
+            bg=background,
+            fg=foreground,
+            font=("Microsoft YaHei UI", 16, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            shell,
+            text="仅统计悬浮窗运行期间识别到的实际工作时段；电脑休眠期间不会被计入。",
+            bg=background,
+            fg=muted,
+            font=("Microsoft YaHei UI", 9),
+        ).pack(anchor="w", pady=(4, 14))
+
+        def format_hours(seconds):
+            return f"{float(seconds) / 3600:.2f} 小时"
+
+        summary_frame = tk.Frame(shell, bg=background)
+        summary_frame.pack(fill="x", pady=(0, 12))
+        periods = (
+            ("今日", today, today),
+            ("近 7 天", week_start, today),
+            ("本月", month_start, today),
+        )
+        for row, (label, start, end) in enumerate(periods):
+            summary = self.stats_tracker.summary(start, end)
+            tk.Label(
+                summary_frame,
+                text=label,
+                bg=background,
+                fg=foreground,
+                font=("Microsoft YaHei UI", 10, "bold"),
+            ).grid(row=row, column=0, padx=(0, 20), pady=4, sticky="w")
+            tk.Label(
+                summary_frame,
+                text=(
+                    f"工作 {format_hours(summary['active_seconds'])}  ·  "
+                    f"加班 {format_hours(summary['overtime_seconds'])}  ·  "
+                    f"会话 {summary['sessions']}"
+                ),
+                bg=background,
+                fg=accent,
+                font=("Consolas", 10),
+            ).grid(row=row, column=1, pady=4, sticky="w")
+
+        def export_stats():
+            path = filedialog.asksaveasfilename(
+                parent=dialog,
+                title="导出工作统计",
+                initialfile=f"ban-clock-stats-{today.isoformat()}.csv",
+                defaultextension=".csv",
+                filetypes=(("CSV 文件", "*.csv"), ("所有文件", "*.*")),
+            )
+            if not path:
+                return
+            try:
+                self.stats_tracker.flush()
+                self.stats_tracker.export_csv(path)
+            except OSError as error:
+                messagebox.showerror("导出统计失败", str(error), parent=dialog)
+                return
+            messagebox.showinfo("导出完成", f"统计已保存到：\n{path}", parent=dialog)
+
+        actions = tk.Frame(shell, bg=background)
+        actions.pack(fill="x")
+        tk.Button(
+            actions,
+            text="导出 CSV",
+            command=export_stats,
+            relief="flat",
+            padx=10,
+            pady=4,
+        ).pack(side="left")
+        tk.Button(
+            actions,
+            text="关闭",
+            command=dialog.destroy,
+            relief="flat",
+            padx=10,
+            pady=4,
+        ).pack(side="right")
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
 
     def open_schedule_settings(self):
         if self.settings_dialog is not None and self.settings_dialog.winfo_exists():
@@ -1809,6 +1930,11 @@ class CountdownWidget:
     def update_display(self):
         now = datetime.now()
         state = self.schedule.state(now, self.calendar)
+        self.stats_tracker.tick(now, state.get("kind"))
+        try:
+            self.stats_tracker.flush_if_due(now)
+        except OSError:
+            LOGGER.warning("无法保存工作统计", exc_info=True)
         self.maybe_notify(state, now)
 
         status_colors = {
@@ -1841,6 +1967,18 @@ class CountdownWidget:
                 self.settings_dialog.destroy()
             except tk.TclError:
                 pass
+        if self.stats_dialog is not None:
+            try:
+                self.stats_dialog.destroy()
+            except tk.TclError:
+                pass
+        try:
+            now = datetime.now()
+            state = self.schedule.state(now, self.calendar)
+            self.stats_tracker.tick(now, state.get("kind"))
+            self.stats_tracker.flush()
+        except (OSError, TypeError, ValueError):
+            LOGGER.warning("退出时无法保存工作统计", exc_info=True)
         self.save_position()
         if self.tray_icon is not None:
             try:
