@@ -32,6 +32,14 @@ python -m pip install -r requirements-build.txt
 
 生成文件：`dist\班时钟.exe`。它可以在没有 Python 环境的 Windows 电脑上直接运行。
 
+如果安装了 Inno Setup 6，可继续生成一键安装器：
+
+```powershell
+.\build_installer.ps1
+```
+
+安装器会提供开始菜单、桌面快捷方式和开机自启选项，默认按当前用户安装，不需要管理员权限。
+
 运行自动化测试：
 
 ```powershell
@@ -102,7 +110,7 @@ python -m unittest discover -s tests -v
 .\uninstall_desktop.ps1
 ```
 
-桌面端菜单中的“检查更新”会连接 GitHub Release 页面检查新版本；“关于班时钟”可查看当前版本号和配置目录。
+桌面端菜单中的“检查更新”会连接 GitHub Release 页面检查新版本；如果 Release 提供 EXE，程序可以下载到用户目录并校验 SHA-256。下载完成后需要手动退出旧版本并运行新 EXE。“关于班时钟”可查看当前版本号和配置目录。
 
 ## 配置说明
 

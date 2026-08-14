@@ -1,4 +1,5 @@
 import ctypes
+import hashlib
 import json
 import logging
 import os
@@ -6,6 +7,7 @@ import re
 import shutil
 import sys
 import threading
+import tempfile
 import urllib.error
 import urllib.request
 import webbrowser
@@ -36,7 +38,7 @@ if getattr(sys, "frozen", False):
 else:
     APP_DIR = Path(__file__).resolve().parent
 APP_NAME = "班时钟"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 GITHUB_REPOSITORY = "sheyingxin1204/work-countdown"
 LEGACY_CONFIG_PATH = APP_DIR / "config.json"
 if os.name == "nt":
@@ -1454,6 +1456,17 @@ class CountdownWidget:
         except (OSError, webbrowser.Error) as error:
             messagebox.showerror("打开配置目录失败", str(error), parent=self.root)
 
+    def open_updates_folder(self):
+        try:
+            updates_dir = USER_CONFIG_DIR / "updates"
+            updates_dir.mkdir(parents=True, exist_ok=True)
+            if hasattr(os, "startfile"):
+                os.startfile(str(updates_dir))
+            else:
+                webbrowser.open(updates_dir.as_uri())
+        except (OSError, webbrowser.Error) as error:
+            messagebox.showerror("打开下载目录失败", str(error), parent=self.root)
+
     def show_about(self):
         messagebox.showinfo(
             f"关于{APP_NAME}",
@@ -1481,31 +1494,121 @@ class CountdownWidget:
                 if not latest_tag:
                     raise ValueError("Release 没有可用的版本号")
                 release_url = str(payload.get("html_url") or latest_release_url())
+                assets = payload.get("assets") or []
+                asset = next(
+                    (
+                        item for item in assets
+                        if str(item.get("name", "")).lower().endswith(".exe")
+                    ),
+                    None,
+                )
+                release_info = {
+                    "tag": latest_tag,
+                    "url": release_url,
+                    "asset_url": str(asset.get("browser_download_url")) if asset else None,
+                    "asset_name": str(asset.get("name")) if asset else None,
+                    "digest": str(asset.get("digest") or "") if asset else "",
+                }
                 is_newer = version_tuple(latest_tag) > version_tuple(APP_VERSION)
-                self.call_on_ui(lambda: self.show_update_result(latest_tag, release_url, is_newer))
+                self.call_on_ui(lambda: self.show_update_result(release_info, is_newer))
             except Exception as error:
                 error_message = str(error)
                 self.call_on_ui(
-                    lambda message=error_message: messagebox.showerror(
-                        "检查更新失败", message, parent=self.root
-                    )
+                    lambda message=error_message: self.show_update_error(message)
                 )
 
         self.update_thread = threading.Thread(target=worker, name="BanClockUpdateCheck", daemon=True)
         self.update_thread.start()
 
-    def show_update_result(self, latest_tag, release_url, is_newer):
+    def show_update_error(self, message):
         self.update_thread = None
+        messagebox.showerror("检查更新失败", message, parent=self.root)
+
+    def show_update_result(self, release_info, is_newer):
+        self.update_thread = None
+        latest_tag = release_info["tag"]
+        release_url = release_info["url"]
         if is_newer:
             should_open = messagebox.askyesno(
                 "发现新版本",
-                f"当前版本：v{APP_VERSION}\n最新版本：{latest_tag}\n\n是否打开下载页面？",
+                f"当前版本：v{APP_VERSION}\n最新版本：{latest_tag}\n\n是否下载并校验新版本？",
                 parent=self.root,
             )
             if should_open:
-                webbrowser.open(release_url)
+                if release_info.get("asset_url"):
+                    self.download_update(release_info)
+                else:
+                    webbrowser.open(release_url)
         else:
             messagebox.showinfo("检查更新", f"当前已是最新版本（v{APP_VERSION}）。", parent=self.root)
+
+    def download_update(self, release_info):
+        if self.update_thread is not None and self.update_thread.is_alive():
+            return
+        messagebox.showinfo(
+            "开始下载",
+            "将下载并校验新版本 EXE，完成后会打开下载目录。",
+            parent=self.root,
+        )
+
+        def worker():
+            update_dir = USER_CONFIG_DIR / "updates"
+            temp_path = None
+            try:
+                update_dir.mkdir(parents=True, exist_ok=True)
+                safe_tag = re.sub(r"[^A-Za-z0-9._-]+", "-", release_info["tag"])
+                target_path = update_dir / f"BanClock-{safe_tag}.exe"
+                with tempfile.NamedTemporaryFile(
+                    mode="wb", suffix=".download", dir=update_dir, delete=False
+                ) as temporary_file:
+                    temp_path = Path(temporary_file.name)
+                    request = urllib.request.Request(
+                        release_info["asset_url"],
+                        headers={
+                            "Accept": "application/octet-stream",
+                            "User-Agent": f"{APP_NAME}/{APP_VERSION}",
+                        },
+                    )
+                    digest = hashlib.sha256()
+                    total_size = 0
+                    with urllib.request.urlopen(request, timeout=30) as response:
+                        while True:
+                            chunk = response.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            total_size += len(chunk)
+                            if total_size > 200 * 1024 * 1024:
+                                raise ValueError("更新文件超过 200 MB，已停止下载")
+                            digest.update(chunk)
+                            temporary_file.write(chunk)
+                actual_digest = digest.hexdigest().lower()
+                expected_digest = release_info.get("digest", "").replace("sha256:", "").lower()
+                if expected_digest and actual_digest != expected_digest:
+                    raise ValueError("下载文件校验失败，文件可能已损坏")
+                os.replace(temp_path, target_path)
+                temp_path = None
+                self.call_on_ui(lambda: self.update_download_result(target_path, actual_digest))
+            except Exception as error:
+                if temp_path is not None:
+                    try:
+                        temp_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                error_message = str(error)
+                self.call_on_ui(lambda message=error_message: self.show_update_error(message))
+
+        self.update_thread = threading.Thread(target=worker, name="BanClockUpdateDownload", daemon=True)
+        self.update_thread.start()
+
+    def update_download_result(self, target_path, digest):
+        self.update_thread = None
+        should_open = messagebox.askyesno(
+            "下载完成",
+                f"文件已通过 SHA-256 校验：\n{target_path}\n\n是否打开下载目录？",
+            parent=self.root,
+        )
+        if should_open:
+            self.open_updates_folder()
 
     def update(self):
         self.update_display()
