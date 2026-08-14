@@ -21,7 +21,7 @@ python -m pip install -r requirements.txt
 .\run.ps1
 ```
 
-首次运行会自动创建本机配置文件 `config.json`。
+首次运行会自动在用户配置目录创建配置文件。已存在项目目录下旧版 `config.json` 时，程序会自动迁移一份到新目录。
 
 ## 构建独立 EXE
 
@@ -75,6 +75,20 @@ python -m pip install -r requirements-build.txt
 .\uninstall_startup.ps1
 ```
 
+创建桌面快捷方式：
+
+```powershell
+.\install_desktop.ps1
+```
+
+删除桌面快捷方式：
+
+```powershell
+.\uninstall_desktop.ps1
+```
+
+桌面端菜单中的“检查更新”会连接 GitHub Release 页面检查新版本；“关于班时钟”可查看当前版本号和配置目录。
+
 ## 配置说明
 
-`config.json` 是本机个人配置，不会提交到 Git。可参考 `config.example.json` 手动配置周末、节假日、调休、透明度和窗口置顶等选项。
+配置文件位于 `%APPDATA%\BanClock\config.json`，是本机个人配置，不会提交到 Git。可参考 `config.example.json` 手动配置周末、节假日、调休、透明度、窗口置顶、提醒和显示模式等选项。

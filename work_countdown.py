@@ -1,8 +1,13 @@
-import json
 import ctypes
+import json
 import os
+import re
+import shutil
 import sys
 import threading
+import urllib.error
+import urllib.request
+import webbrowser
 from copy import deepcopy
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -28,8 +33,16 @@ if getattr(sys, "frozen", False):
     APP_DIR = Path(sys.executable).resolve().parent
 else:
     APP_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = APP_DIR / "config.json"
 APP_NAME = "班时钟"
+APP_VERSION = "1.1.0"
+GITHUB_REPOSITORY = "sheyingxin1204/work-countdown"
+LEGACY_CONFIG_PATH = APP_DIR / "config.json"
+if os.name == "nt":
+    _appdata_root = Path(os.environ.get("APPDATA") or APP_DIR)
+else:
+    _appdata_root = APP_DIR
+USER_CONFIG_DIR = _appdata_root / "BanClock"
+CONFIG_PATH = USER_CONFIG_DIR / "config.json"
 ICON_RELATIVE_PATH = Path("assets") / "ban-clock-icon.png"
 SINGLE_INSTANCE_MUTEX = None
 
@@ -152,6 +165,15 @@ def deep_merge(base, override):
 
 
 def load_config():
+    if not CONFIG_PATH.exists() and LEGACY_CONFIG_PATH.exists() and LEGACY_CONFIG_PATH != CONFIG_PATH:
+        try:
+            USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(LEGACY_CONFIG_PATH, CONFIG_PATH)
+        except OSError:
+            # The widget can still start with defaults if the old config
+            # cannot be copied (for example, on a read-only folder).
+            pass
+
     if not CONFIG_PATH.exists():
         save_config(DEFAULT_CONFIG)
         return deepcopy(DEFAULT_CONFIG)
@@ -183,8 +205,12 @@ def migrate_legacy_config(config):
 
 
 def save_config(config):
-    with CONFIG_PATH.open("w", encoding="utf-8") as config_file:
+    USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    temporary_path = CONFIG_PATH.with_suffix(".tmp")
+    with temporary_path.open("w", encoding="utf-8") as config_file:
         json.dump(config, config_file, ensure_ascii=False, indent=2)
+        config_file.write("\n")
+    os.replace(temporary_path, CONFIG_PATH)
 
 
 def parse_clock(value):
@@ -225,6 +251,15 @@ def format_remaining(delta):
 
 def format_clock(value):
     return value.strftime("%H:%M")
+
+
+def version_tuple(value):
+    parts = re.findall(r"\d+", str(value))
+    return tuple(int(part) for part in parts) or (0,)
+
+
+def latest_release_url():
+    return f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
 
 
 class WorkCalendar:
@@ -351,6 +386,7 @@ class CountdownWidget:
         self.tray_thread = None
         self.is_closing = False
         self.settings_dialog = None
+        self.update_thread = None
         self.last_state_kind = None
         self.last_state_date = None
 
@@ -437,6 +473,9 @@ class CountdownWidget:
         self.menu = tk.Menu(self.root, tearoff=0)
         self.menu.add_command(label="打开设置中心", command=self.open_schedule_settings)
         self.menu.add_command(label="重新加载配置", command=self.reload_config)
+        self.menu.add_command(label="检查更新", command=self.check_for_updates)
+        self.menu.add_command(label="打开配置目录", command=self.open_config_folder)
+        self.menu.add_command(label=f"关于{APP_NAME}", command=self.show_about)
         self.menu.add_separator()
         self.menu.add_command(label="隐藏到系统托盘", command=self.hide_window)
         self.menu.add_command(label="退出班时钟", command=self.quit)
@@ -599,6 +638,14 @@ class CountdownWidget:
                     "重新加载配置",
                     lambda _icon, _item: self.call_on_ui(self.reload_config),
                 ),
+                pystray.MenuItem(
+                    "检查更新",
+                    lambda _icon, _item: self.call_on_ui(self.check_for_updates),
+                ),
+                pystray.MenuItem(
+                    "打开配置目录",
+                    lambda _icon, _item: self.call_on_ui(self.open_config_folder),
+                ),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem(
                     "退出班时钟",
@@ -666,7 +713,7 @@ class CountdownWidget:
 
         dialog = tk.Toplevel(self.root)
         self.settings_dialog = dialog
-        dialog.title(f"{APP_NAME} · 设置中心")
+        dialog.title(f"{APP_NAME} v{APP_VERSION} · 设置中心")
         dialog.transient(self.root)
         dialog.resizable(False, False)
         dialog.configure(bg=background)
@@ -999,6 +1046,69 @@ class CountdownWidget:
             self.apply_config(load_config())
         except (KeyError, TypeError, ValueError) as error:
             messagebox.showerror("配置无效", str(error), parent=self.root)
+
+    def open_config_folder(self):
+        try:
+            USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            if hasattr(os, "startfile"):
+                os.startfile(str(USER_CONFIG_DIR))
+            else:
+                webbrowser.open(USER_CONFIG_DIR.as_uri())
+        except (OSError, webbrowser.Error) as error:
+            messagebox.showerror("打开配置目录失败", str(error), parent=self.root)
+
+    def show_about(self):
+        messagebox.showinfo(
+            f"关于{APP_NAME}",
+            f"{APP_NAME} v{APP_VERSION}\n\n"
+            "桌面上下班倒计时工具\n"
+            f"配置目录：{USER_CONFIG_DIR}",
+            parent=self.root,
+        )
+
+    def check_for_updates(self):
+        if self.update_thread is not None and self.update_thread.is_alive():
+            messagebox.showinfo("检查更新", "正在检查最新版本，请稍候。", parent=self.root)
+            return
+
+        def worker():
+            api_url = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
+            try:
+                request = urllib.request.Request(
+                    api_url,
+                    headers={"Accept": "application/vnd.github+json", "User-Agent": f"{APP_NAME}/{APP_VERSION}"},
+                )
+                with urllib.request.urlopen(request, timeout=8) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                latest_tag = str(payload.get("tag_name", "")).strip()
+                if not latest_tag:
+                    raise ValueError("Release 没有可用的版本号")
+                release_url = str(payload.get("html_url") or latest_release_url())
+                is_newer = version_tuple(latest_tag) > version_tuple(APP_VERSION)
+                self.call_on_ui(lambda: self.show_update_result(latest_tag, release_url, is_newer))
+            except Exception as error:
+                error_message = str(error)
+                self.call_on_ui(
+                    lambda message=error_message: messagebox.showerror(
+                        "检查更新失败", message, parent=self.root
+                    )
+                )
+
+        self.update_thread = threading.Thread(target=worker, name="BanClockUpdateCheck", daemon=True)
+        self.update_thread.start()
+
+    def show_update_result(self, latest_tag, release_url, is_newer):
+        self.update_thread = None
+        if is_newer:
+            should_open = messagebox.askyesno(
+                "发现新版本",
+                f"当前版本：v{APP_VERSION}\n最新版本：{latest_tag}\n\n是否打开下载页面？",
+                parent=self.root,
+            )
+            if should_open:
+                webbrowser.open(release_url)
+        else:
+            messagebox.showinfo("检查更新", f"当前已是最新版本（v{APP_VERSION}）。", parent=self.root)
 
     def update(self):
         self.update_display()
