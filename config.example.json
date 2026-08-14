@@ -46,6 +46,7 @@
     "show_schedule": true
   },
   "style": {
+    "theme": "dark",
     "background": "#101418",
     "foreground": "#F3F7FA",
     "muted": "#9BA7B0",

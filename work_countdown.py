@@ -15,7 +15,7 @@ from copy import deepcopy
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 from logging.handlers import RotatingFileHandler
 
 try:
@@ -163,12 +163,38 @@ DEFAULT_CONFIG = {
         "show_schedule": True,
     },
     "style": {
+        "theme": "dark",
         "background": "#101418",
         "foreground": "#F3F7FA",
         "muted": "#9BA7B0",
         "accent": "#39A0ED",
     },
 }
+
+THEME_PRESETS = {
+    "dark": {
+        "theme": "dark",
+        "background": "#101418",
+        "foreground": "#F3F7FA",
+        "muted": "#9BA7B0",
+        "accent": "#39A0ED",
+    },
+    "light": {
+        "theme": "light",
+        "background": "#F4F7FA",
+        "foreground": "#1F2933",
+        "muted": "#65727E",
+        "accent": "#1479D1",
+    },
+    "ocean": {
+        "theme": "ocean",
+        "background": "#0B2333",
+        "foreground": "#E8F7FF",
+        "muted": "#8DB8CC",
+        "accent": "#42C6E8",
+    },
+}
+THEME_LABELS = {"dark": "深色", "light": "浅色", "ocean": "海洋蓝"}
 
 
 def deep_merge(base, override):
@@ -602,6 +628,8 @@ class CountdownWidget:
         self.root.attributes("-alpha", float(self.config["window"]["alpha"]))
         self.root.configure(bg=self.config["style"]["background"])
         self.root.protocol("WM_DELETE_WINDOW", self.hide_window)
+        self.root.bind_all("<Control-Shift-b>", lambda _event: self.toggle_window())
+        self.root.bind_all("<Control-Shift-s>", lambda _event: self.open_schedule_settings())
 
         self.frame = tk.Frame(
             self.root,
@@ -672,6 +700,7 @@ class CountdownWidget:
         self.menu.add_command(label="重新加载配置", command=self.reload_config)
         self.menu.add_command(label="检查更新", command=self.check_for_updates)
         self.menu.add_command(label="打开配置目录", command=self.open_config_folder)
+        self.menu.add_command(label="恢复默认位置", command=self.reset_position)
         self.menu.add_command(label=f"关于{APP_NAME}", command=self.show_about)
         self.menu.add_separator()
         self.menu.add_command(label="隐藏到系统托盘", command=self.hide_window)
@@ -744,6 +773,25 @@ class CountdownWidget:
         self.morning_value.configure(text=self.schedule.morning_range_text())
         self.afternoon_value.configure(text=self.schedule.afternoon_range_text())
 
+    def apply_style(self):
+        style = self.config["style"]
+        background = style["background"]
+        foreground = style["foreground"]
+        muted = style["muted"]
+        accent = style["accent"]
+        self.root.configure(bg=background)
+        self.frame.configure(bg=background, highlightbackground="#26313A")
+        for widget in (self.title_label, self.clock_label):
+            widget.configure(bg=background, fg=muted)
+        for widget in (self.status_label, self.countdown_label, self.morning_label, self.afternoon_label):
+            widget.configure(bg=background, fg=foreground)
+        self.countdown_value.configure(bg=background, fg=accent)
+        for widget in (self.morning_value, self.afternoon_value):
+            widget.configure(bg=background, fg=foreground)
+        self.status_value.configure(bg=background, fg=accent)
+        self.progress_canvas.configure(bg="#26313A")
+        self.progress_canvas.itemconfigure(self.progress_fill, fill=accent)
+
     def apply_display_preferences(self):
         display = self.config.get("display", {})
         show_schedule = bool(display.get("show_schedule", True)) and not bool(display.get("compact", False))
@@ -804,6 +852,12 @@ class CountdownWidget:
         self.config["window"]["x"] = self.root.winfo_x()
         self.config["window"]["y"] = self.root.winfo_y()
         save_config(self.config)
+
+    def reset_position(self):
+        self.config["window"]["x"] = None
+        self.config["window"]["y"] = None
+        save_config(self.config)
+        self.place_window()
 
     def show_menu(self, event):
         self.menu.tk_popup(event.x_root, event.y_root)
@@ -936,8 +990,22 @@ class CountdownWidget:
             font=("Microsoft YaHei UI", 9),
         ).pack(anchor="w", pady=(4, 14))
 
+        notebook_style = ttk.Style(dialog)
+        notebook_style.configure("BanClock.TNotebook", background=background, borderwidth=0)
+        notebook_style.configure("BanClock.TNotebook.Tab", padding=(12, 6))
+        notebook = ttk.Notebook(shell, style="BanClock.TNotebook")
+        notebook.pack(fill="both", expand=True, pady=(0, 14))
+        schedule_tab = tk.Frame(notebook, bg=background, padx=4, pady=8)
+        calendar_tab = tk.Frame(notebook, bg=background, padx=4, pady=8)
+        display_tab = tk.Frame(notebook, bg=background, padx=4, pady=8)
+        notification_tab = tk.Frame(notebook, bg=background, padx=4, pady=8)
+        notebook.add(schedule_tab, text="工作时间")
+        notebook.add(calendar_tab, text="工作日历")
+        notebook.add(display_tab, text="显示外观")
+        notebook.add(notification_tab, text="提醒")
+
         schedule_frame = tk.LabelFrame(
-            shell,
+            schedule_tab,
             text="工作时间",
             bg=background,
             fg=foreground,
@@ -945,7 +1013,7 @@ class CountdownWidget:
             padx=12,
             pady=8,
         )
-        schedule_frame.pack(fill="x", pady=(0, 12))
+        schedule_frame.pack(fill="both", expand=True, pady=(0, 12))
         schedule_fields = (
             ("morning_start", "上午上班"),
             ("lunch_start", "午休开始"),
@@ -1034,7 +1102,7 @@ class CountdownWidget:
         ).grid(row=6, column=2, columnspan=2, padx=5, pady=(8, 0), sticky="w")
 
         calendar_frame = tk.LabelFrame(
-            shell,
+            calendar_tab,
             text="工作日历",
             bg=background,
             fg=foreground,
@@ -1042,7 +1110,7 @@ class CountdownWidget:
             padx=12,
             pady=8,
         )
-        calendar_frame.pack(fill="x", pady=(0, 12))
+        calendar_frame.pack(fill="both", expand=True, pady=(0, 12))
         weekend_var = tk.BooleanVar(value=bool(self.config["calendar"]["weekend_rest"]))
         tk.Checkbutton(
             calendar_frame,
@@ -1182,7 +1250,7 @@ class CountdownWidget:
         ).pack(side="left", padx=(8, 0))
 
         display_frame = tk.LabelFrame(
-            shell,
+            display_tab,
             text="悬浮窗",
             bg=background,
             fg=foreground,
@@ -1190,7 +1258,7 @@ class CountdownWidget:
             padx=12,
             pady=8,
         )
-        display_frame.pack(fill="x", pady=(0, 14))
+        display_frame.pack(fill="both", expand=True, pady=(0, 14))
         topmost_var = tk.BooleanVar(value=bool(self.config["window"]["always_on_top"]))
         tk.Checkbutton(
             display_frame,
@@ -1203,6 +1271,18 @@ class CountdownWidget:
             selectcolor="#26313A",
             font=("Microsoft YaHei UI", 9),
         ).grid(row=0, column=0, sticky="w")
+        theme_key = self.config["style"].get("theme", "dark")
+        theme_var = tk.StringVar(value=THEME_LABELS.get(theme_key, THEME_LABELS["dark"]))
+        tk.Label(
+            display_frame,
+            text="主题",
+            bg=background,
+            fg=foreground,
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=0, column=1, padx=(18, 6), sticky="e")
+        theme_menu = tk.OptionMenu(display_frame, theme_var, *THEME_LABELS.values())
+        theme_menu.configure(relief="flat", highlightthickness=0, font=("Microsoft YaHei UI", 9))
+        theme_menu.grid(row=0, column=2, sticky="w")
         tk.Label(
             display_frame,
             text="透明度",
@@ -1243,6 +1323,14 @@ class CountdownWidget:
             font=("Consolas", 10),
             relief="flat",
         ).grid(row=2, column=1, padx=(12, 0), pady=(8, 0), sticky="w")
+        tk.Button(
+            display_frame,
+            text="恢复默认位置",
+            command=self.reset_position,
+            relief="flat",
+            padx=8,
+            pady=3,
+        ).grid(row=2, column=2, padx=(12, 0), pady=(8, 0), sticky="w")
         display = self.config.get("display", {})
         compact_var = tk.BooleanVar(value=bool(display.get("compact", False)))
         show_seconds_var = tk.BooleanVar(value=bool(display.get("show_seconds", True)))
@@ -1266,7 +1354,7 @@ class CountdownWidget:
             ).grid(row=3 + row // 2, column=row % 2, padx=(0, 18), pady=2, sticky="w")
 
         notification_frame = tk.LabelFrame(
-            shell,
+            notification_tab,
             text="提醒",
             bg=background,
             fg=foreground,
@@ -1274,7 +1362,7 @@ class CountdownWidget:
             padx=12,
             pady=8,
         )
-        notification_frame.pack(fill="x", pady=(0, 14))
+        notification_frame.pack(fill="both", expand=True, pady=(0, 14))
         notifications = self.config.get("notifications", {})
         notifications_enabled_var = tk.BooleanVar(value=bool(notifications.get("enabled", True)))
         lunch_notification_var = tk.BooleanVar(value=bool(notifications.get("lunch", True)))
@@ -1378,6 +1466,11 @@ class CountdownWidget:
                 candidate["window"]["alpha"] = round(float(alpha_var.get()), 2)
                 candidate["window"]["always_on_top"] = bool(topmost_var.get())
                 candidate["window"]["margin"] = max(8, min(64, int(margin_var.get())))
+                selected_theme = next(
+                    (key for key, label in THEME_LABELS.items() if label == theme_var.get()),
+                    "dark",
+                )
+                candidate["style"].update(deepcopy(THEME_PRESETS[selected_theme]))
                 candidate["display"] = {
                     "compact": bool(compact_var.get()),
                     "show_seconds": bool(show_seconds_var.get()),
@@ -1433,6 +1526,7 @@ class CountdownWidget:
         self.config = config
         self.calendar = WorkCalendar(self.config)
         self.schedule = WorkSchedule(self.config)
+        self.apply_style()
         self.root.attributes("-alpha", float(self.config["window"]["alpha"]))
         self.root.attributes("-topmost", bool(self.config["window"]["always_on_top"]))
         self.refresh_static_ranges()
