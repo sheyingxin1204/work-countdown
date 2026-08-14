@@ -40,6 +40,12 @@ python -m pip install -r requirements-build.txt
 
 安装器会提供开始菜单、桌面快捷方式和开机自启选项，默认按当前用户安装，不需要管理员权限。
 
+生成发布校验和：
+
+```powershell
+.\create_checksums.ps1
+```
+
 运行自动化测试：
 
 ```powershell
