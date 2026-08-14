@@ -46,6 +46,16 @@ python -m pip install -r requirements-build.txt
 python -m unittest discover -s tests -v
 ```
 
+开发依赖和 CI 检查：
+
+```powershell
+python -m pip install -r requirements-dev.txt
+python -m ruff check work_core.py tests
+python -m mypy work_core.py
+```
+
+GitHub Actions 会在 Windows 环境中自动执行测试、类型检查、EXE 构建和启动烟测。
+
 ## 设置上下班时间
 
 在悬浮窗上右键，选择“打开设置中心”，可以集中配置：

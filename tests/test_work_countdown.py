@@ -1,6 +1,6 @@
 import unittest
 from copy import deepcopy
-from datetime import datetime, date
+from datetime import date, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -17,7 +17,8 @@ class WorkCountdownTests(unittest.TestCase):
 
     def test_parse_clock_and_format_remaining(self):
         self.assertEqual(app.parse_clock("09:30").hour, 9)
-        self.assertEqual(app.format_remaining(datetime(2026, 8, 14, 10, 0) - datetime(2026, 8, 14, 9, 1, 2)), "00:58:58")
+        delta = datetime(2026, 8, 14, 10, 0) - datetime(2026, 8, 14, 9, 1, 2)
+        self.assertEqual(app.format_remaining(delta), "00:58:58")
         with self.assertRaises(ValueError):
             app.parse_clock("25:00")
 
@@ -115,6 +116,7 @@ class WorkCountdownTests(unittest.TestCase):
         config["schedule"].pop("work_segments", None)
         schedule = app.WorkSchedule(config)
         self.assertEqual(schedule.morning_range_text(), "09:00 - 12:00")
+        self.assertEqual(app.WorkSchedule.__module__, "work_core")
 
     def test_progress_is_clamped(self):
         self.assertEqual(self.schedule.progress(datetime(2026, 8, 14, 8, 0), self.calendar), 0.0)
