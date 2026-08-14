@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $startupDir = [Environment]::GetFolderPath("Startup")
-$shortcutPath = Join-Path $startupDir "Work Countdown.lnk"
+$shortcutPath = Join-Path $startupDir "班时钟.lnk"
 
 if (Test-Path $shortcutPath) {
     Remove-Item $shortcutPath

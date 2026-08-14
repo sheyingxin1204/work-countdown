@@ -1,14 +1,35 @@
 import json
 import sys
+import threading
 from copy import deepcopy
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox
 
+try:
+    import pystray
+    from PIL import Image
+except ImportError:  # The widget can still run without a tray dependency.
+    pystray = None
+    Image = None
 
-APP_DIR = Path(__file__).resolve().parent
+
+if getattr(sys, "frozen", False):
+    # Keep user configuration beside the packaged EXE instead of inside the
+    # temporary extraction directory used by one-file PyInstaller builds.
+    APP_DIR = Path(sys.executable).resolve().parent
+else:
+    APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "config.json"
+APP_NAME = "班时钟"
+ICON_RELATIVE_PATH = Path("assets") / "ban-clock-icon.png"
+
+
+def resource_path(relative_path):
+    """Resolve an asset both from source checkout and PyInstaller bundles."""
+    bundle_dir = Path(getattr(sys, "_MEIPASS", APP_DIR))
+    return bundle_dir / relative_path
 
 DEFAULT_CONFIG = {
     "schedule": {
@@ -211,13 +232,17 @@ class CountdownWidget:
         self.schedule = WorkSchedule(self.config)
         self.drag_offset_x = 0
         self.drag_offset_y = 0
+        self.tray_icon = None
+        self.tray_thread = None
+        self.is_closing = False
 
         self.root = tk.Tk()
-        self.root.title("Work Countdown")
+        self.root.title(APP_NAME)
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", bool(self.config["window"]["always_on_top"]))
         self.root.attributes("-alpha", float(self.config["window"]["alpha"]))
         self.root.configure(bg=self.config["style"]["background"])
+        self.root.protocol("WM_DELETE_WINDOW", self.hide_window)
 
         self.frame = tk.Frame(
             self.root,
@@ -266,7 +291,9 @@ class CountdownWidget:
         self.menu = tk.Menu(self.root, tearoff=0)
         self.menu.add_command(label="设置上下班时间", command=self.open_schedule_settings)
         self.menu.add_command(label="重新加载配置", command=self.reload_config)
-        self.menu.add_command(label="退出", command=self.quit)
+        self.menu.add_separator()
+        self.menu.add_command(label="隐藏到系统托盘", command=self.hide_window)
+        self.menu.add_command(label="退出班时钟", command=self.quit)
 
         for widget in (
             self.root,
@@ -289,6 +316,7 @@ class CountdownWidget:
 
         self.refresh_static_ranges()
         self.place_window()
+        self.start_tray()
         self.update()
 
     def create_name_label(self, text):
@@ -367,6 +395,87 @@ class CountdownWidget:
 
     def show_menu(self, event):
         self.menu.tk_popup(event.x_root, event.y_root)
+
+    def start_tray(self):
+        """Start the Windows notification-area icon on a background thread."""
+        if pystray is None or Image is None:
+            return
+
+        icon_path = resource_path(ICON_RELATIVE_PATH)
+        if not icon_path.exists():
+            return
+
+        try:
+            image = Image.open(icon_path).convert("RGBA")
+            resampling = getattr(Image, "Resampling", Image)
+            image.thumbnail((64, 64), resampling.LANCZOS)
+            menu = pystray.Menu(
+                pystray.MenuItem(
+                    "显示/隐藏窗口",
+                    lambda _icon, _item: self.call_on_ui(self.toggle_window),
+                    default=True,
+                ),
+                pystray.MenuItem(
+                    "设置上下班时间",
+                    lambda _icon, _item: self.call_on_ui(self.open_schedule_from_tray),
+                ),
+                pystray.MenuItem(
+                    "重新加载配置",
+                    lambda _icon, _item: self.call_on_ui(self.reload_config),
+                ),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem(
+                    "退出班时钟",
+                    lambda _icon, _item: self.call_on_ui(self.quit),
+                ),
+            )
+            self.tray_icon = pystray.Icon(
+                "ban_clock",
+                image,
+                APP_NAME,
+                menu=menu,
+            )
+            self.tray_thread = threading.Thread(
+                target=self.tray_icon.run,
+                name="班时钟系统托盘",
+                daemon=True,
+            )
+            self.tray_thread.start()
+        except Exception:
+            # A missing or unsupported tray backend should not prevent the
+            # countdown widget itself from opening.
+            self.tray_icon = None
+            self.tray_thread = None
+
+    def call_on_ui(self, callback):
+        """Schedule a Tk callback from a pystray worker thread."""
+        if self.is_closing:
+            return
+        try:
+            self.root.after(0, callback)
+        except tk.TclError:
+            pass
+
+    def toggle_window(self):
+        if self.root.state() == "withdrawn":
+            self.show_window()
+        else:
+            self.hide_window()
+
+    def show_window(self):
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+    def hide_window(self):
+        if self.tray_icon is None:
+            return
+        self.save_position()
+        self.root.withdraw()
+
+    def open_schedule_from_tray(self):
+        self.show_window()
+        self.open_schedule_settings()
 
     def open_schedule_settings(self):
         dialog = tk.Toplevel(self.root)
@@ -456,7 +565,15 @@ class CountdownWidget:
         self.clock_label.configure(text=now.strftime("%Y-%m-%d %H:%M:%S"))
 
     def quit(self):
+        if self.is_closing:
+            return
+        self.is_closing = True
         self.save_position()
+        if self.tray_icon is not None:
+            try:
+                self.tray_icon.stop()
+            except Exception:
+                pass
         self.root.destroy()
 
     def run(self):
@@ -467,7 +584,7 @@ def main():
     try:
         CountdownWidget().run()
     except Exception as error:
-        messagebox.showerror("Work Countdown", str(error))
+        messagebox.showerror(APP_NAME, str(error))
         sys.exit(1)
 
 

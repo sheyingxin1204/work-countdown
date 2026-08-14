@@ -2,25 +2,33 @@ $ErrorActionPreference = "Stop"
 
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $scriptPath = Join-Path $projectDir "work_countdown.py"
+$exePath = Join-Path $projectDir "dist\班时钟.exe"
 $startupDir = [Environment]::GetFolderPath("Startup")
-$shortcutPath = Join-Path $startupDir "Work Countdown.lnk"
-
-$pythonCommand = Get-Command pythonw.exe -ErrorAction SilentlyContinue
-if (-not $pythonCommand) {
-    $pythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
-}
-
-if (-not $pythonCommand) {
-    throw "Python was not found in PATH. Install Python first, or add it to PATH."
-}
+$shortcutPath = Join-Path $startupDir "班时钟.lnk"
 
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = $pythonCommand.Source
-$shortcut.Arguments = "`"$scriptPath`""
+$shortcut.Arguments = ""
+
+if (Test-Path $exePath) {
+    $shortcut.TargetPath = $exePath
+} else {
+    $pythonCommand = Get-Command pythonw.exe -ErrorAction SilentlyContinue
+    if (-not $pythonCommand) {
+        $pythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
+    }
+
+    if (-not $pythonCommand) {
+        throw "Ban Clock.exe was not found, and Python was not found in PATH."
+    }
+
+    $shortcut.TargetPath = $pythonCommand.Source
+    $shortcut.Arguments = '"' + $scriptPath + '"'
+}
+
 $shortcut.WorkingDirectory = $projectDir
 $shortcut.WindowStyle = 7
-$shortcut.Description = "Work Countdown desktop widget"
+$shortcut.Description = "Ban Clock desktop countdown"
 $shortcut.Save()
 
 Write-Host "Installed startup shortcut:"
