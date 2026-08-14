@@ -225,12 +225,12 @@ class WorkSchedule:
                 )
             return max(0.0, min(1.0, elapsed_seconds / total_seconds))
 
-        start = self.at(now.date(), self.morning_start)
-        end = self.at(now.date(), self.off_work)
-        total_seconds = (end - start).total_seconds()
+        wall_start = self.at(now.date(), self.morning_start)
+        wall_end = self.at(now.date(), self.off_work)
+        total_seconds = (wall_end - wall_start).total_seconds()
         if total_seconds <= 0:
             return 0.0
-        elapsed_seconds = (now - start).total_seconds()
+        elapsed_seconds = (now - wall_start).total_seconds()
         return max(0.0, min(1.0, elapsed_seconds / total_seconds))
 
     def state(self, now: datetime, calendar: WorkCalendar) -> dict[str, Any]:

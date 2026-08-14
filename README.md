@@ -143,3 +143,5 @@ GitHub Actions 会在 Windows 环境中自动执行测试、类型检查、EXE �
 配置文件位于 `%APPDATA%\BanClock\config.json`，是本机个人配置，不会提交到 Git。可参考 `config.example.json` 手动配置周末、节假日、调休、透明度、窗口置顶、提醒和显示模式等选项。
 
 运行日志位于 `%APPDATA%\BanClock\ban_clock.log`。如果配置文件损坏，程序会先保留 `config.broken.*.json` 备份，再恢复默认配置。
+
+代码按职责拆分为 `work_core.py`（日历与倒计时逻辑）、`holiday_sync.py`（节假日同步）、`work_stats.py`（统计持久化）和 `app_updates.py`（Release 检查与下载），桌面界面保留在 `work_countdown.py`。

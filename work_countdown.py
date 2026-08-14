@@ -1,17 +1,12 @@
 import ctypes
-import hashlib
 import json
 import logging
 import os
-import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import tkinter as tk
-import urllib.error
-import urllib.request
 import webbrowser
 from copy import deepcopy
 from datetime import date, datetime, time, timedelta
@@ -19,6 +14,16 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from app_updates import (
+    download_release_asset,
+    fetch_latest_release,
+)
+from app_updates import (
+    latest_release_url as build_latest_release_url,
+)
+from app_updates import (
+    version_tuple as _version_tuple,
+)
 from holiday_sync import (
     HOLIDAY_SOURCE_URL,
     fetch_holiday_calendar,
@@ -458,12 +463,12 @@ def format_clock(value):
 
 
 def version_tuple(value):
-    parts = re.findall(r"\d+", str(value))
-    return tuple(int(part) for part in parts) or (0,)
+    """Compatibility wrapper for callers that imported the old helper."""
+    return _version_tuple(value)
 
 
 def latest_release_url():
-    return f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
+    return build_latest_release_url(GITHUB_REPOSITORY)
 
 
 def holiday_cache_path(year):
@@ -1699,34 +1704,12 @@ class CountdownWidget:
             return
 
         def worker():
-            api_url = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
             try:
-                request = urllib.request.Request(
-                    api_url,
-                    headers={"Accept": "application/vnd.github+json", "User-Agent": f"{APP_NAME}/{APP_VERSION}"},
+                release_info, is_newer = fetch_latest_release(
+                    GITHUB_REPOSITORY,
+                    APP_VERSION,
+                    APP_NAME,
                 )
-                with urllib.request.urlopen(request, timeout=8) as response:
-                    payload = json.loads(response.read().decode("utf-8"))
-                latest_tag = str(payload.get("tag_name", "")).strip()
-                if not latest_tag:
-                    raise ValueError("Release 没有可用的版本号")
-                release_url = str(payload.get("html_url") or latest_release_url())
-                assets = payload.get("assets") or []
-                asset = next(
-                    (
-                        item for item in assets
-                        if str(item.get("name", "")).lower().endswith(".exe")
-                    ),
-                    None,
-                )
-                release_info = {
-                    "tag": latest_tag,
-                    "url": release_url,
-                    "asset_url": str(asset.get("browser_download_url")) if asset else None,
-                    "asset_name": str(asset.get("name")) if asset else None,
-                    "digest": str(asset.get("digest") or "") if asset else "",
-                }
-                is_newer = version_tuple(latest_tag) > version_tuple(APP_VERSION)
                 self.call_on_ui(lambda: self.show_update_result(release_info, is_newer))
             except Exception as error:
                 error_message = str(error)
@@ -1770,47 +1753,15 @@ class CountdownWidget:
 
         def worker():
             update_dir = USER_CONFIG_DIR / "updates"
-            temp_path = None
             try:
-                update_dir.mkdir(parents=True, exist_ok=True)
-                safe_tag = re.sub(r"[^A-Za-z0-9._-]+", "-", release_info["tag"])
-                target_path = update_dir / f"BanClock-{safe_tag}.exe"
-                with tempfile.NamedTemporaryFile(
-                    mode="wb", suffix=".download", dir=update_dir, delete=False
-                ) as temporary_file:
-                    temp_path = Path(temporary_file.name)
-                    request = urllib.request.Request(
-                        release_info["asset_url"],
-                        headers={
-                            "Accept": "application/octet-stream",
-                            "User-Agent": f"{APP_NAME}/{APP_VERSION}",
-                        },
-                    )
-                    digest = hashlib.sha256()
-                    total_size = 0
-                    with urllib.request.urlopen(request, timeout=30) as response:
-                        while True:
-                            chunk = response.read(1024 * 1024)
-                            if not chunk:
-                                break
-                            total_size += len(chunk)
-                            if total_size > 200 * 1024 * 1024:
-                                raise ValueError("更新文件超过 200 MB，已停止下载")
-                            digest.update(chunk)
-                            temporary_file.write(chunk)
-                actual_digest = digest.hexdigest().lower()
-                expected_digest = release_info.get("digest", "").replace("sha256:", "").lower()
-                if expected_digest and actual_digest != expected_digest:
-                    raise ValueError("下载文件校验失败，文件可能已损坏")
-                os.replace(temp_path, target_path)
-                temp_path = None
+                target_path, actual_digest = download_release_asset(
+                    release_info,
+                    update_dir,
+                    APP_NAME,
+                    APP_VERSION,
+                )
                 self.call_on_ui(lambda: self.update_download_result(target_path, actual_digest))
             except Exception as error:
-                if temp_path is not None:
-                    try:
-                        temp_path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
                 error_message = str(error)
                 self.call_on_ui(lambda message=error_message: self.show_update_error(message))
 
