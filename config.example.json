@@ -32,7 +32,13 @@
     "enabled": true,
     "lunch": true,
     "off_work": true,
-    "sound": false
+    "sound": false,
+    "lead_minutes": 0,
+    "quiet_hours": {
+      "enabled": false,
+      "start": "22:00",
+      "end": "08:00"
+    }
   },
   "display": {
     "compact": false,

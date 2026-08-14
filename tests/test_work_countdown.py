@@ -79,6 +79,37 @@ class WorkCountdownTests(unittest.TestCase):
         self.assertEqual(schedule.state(datetime(2026, 8, 14, 15, 30), self.calendar)["kind"], "break")
         self.assertEqual(schedule.state(datetime(2026, 8, 14, 19, 0), self.calendar)["kind"], "overtime")
 
+    def test_notification_lead_time_and_deduplication(self):
+        widget = app.CountdownWidget.__new__(app.CountdownWidget)
+        widget.last_state_kind = None
+        widget.last_state_date = None
+        widget.sent_alerts = set()
+        widget.config = {"notifications": {
+            "enabled": True,
+            "lunch": True,
+            "off_work": True,
+            "sound": False,
+            "lead_minutes": 10,
+            "quiet_hours": {"enabled": False, "start": "22:00", "end": "08:00"},
+        }}
+        widget.schedule = self.schedule
+        widget.calendar = self.calendar
+        calls = []
+        widget.notify_user = lambda title, message, notifications: calls.append(title)
+        widget.maybe_notify({"kind": "morning"}, datetime(2026, 8, 14, 11, 50))
+        widget.maybe_notify({"kind": "lunch"}, datetime(2026, 8, 14, 12, 0))
+        widget.maybe_notify({"kind": "lunch"}, datetime(2026, 8, 14, 12, 1))
+        self.assertEqual(calls, ["午休提醒", "午休提醒"])
+
+    def test_quiet_hours_supports_cross_midnight_window(self):
+        widget = app.CountdownWidget.__new__(app.CountdownWidget)
+        widget.config = {"notifications": {
+            "quiet_hours": {"enabled": True, "start": "22:00", "end": "08:00"},
+        }}
+        self.assertTrue(widget.is_quiet_hours(datetime(2026, 8, 14, 23, 0)))
+        self.assertTrue(widget.is_quiet_hours(datetime(2026, 8, 14, 7, 59)))
+        self.assertFalse(widget.is_quiet_hours(datetime(2026, 8, 14, 12, 0)))
+
     def test_legacy_schedule_still_works(self):
         config = deepcopy(self.config)
         config["schedule"].pop("work_segments", None)

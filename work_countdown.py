@@ -148,6 +148,12 @@ DEFAULT_CONFIG = {
         "lunch": True,
         "off_work": True,
         "sound": False,
+        "lead_minutes": 0,
+        "quiet_hours": {
+            "enabled": False,
+            "start": "22:00",
+            "end": "08:00",
+        },
     },
     "display": {
         "compact": False,
@@ -483,6 +489,15 @@ class WorkSchedule:
         start, end = self.work_segments[1]
         return f"{format_clock(start)} - {format_clock(end)}"
 
+    def notification_events(self, target_date, calendar):
+        if not calendar.is_workday(target_date):
+            return []
+        events = []
+        if len(self.work_segments) > 1:
+            events.append(("lunch", self.at(target_date, self.work_segments[0][1]), "午休", "午休开始了，休息一下吧。"))
+        events.append(("off_work", self.at(target_date, self.off_work), "下班", "下班时间到了，今天辛苦了。"))
+        return events
+
     def progress(self, now, calendar):
         """Return the elapsed fraction of the workday, clamped to 0..1."""
         if not calendar.is_workday(now.date()):
@@ -568,6 +583,7 @@ class CountdownWidget:
         self.update_thread = None
         self.last_state_kind = None
         self.last_state_date = None
+        self.sent_alerts = set()
 
         self.root = tk.Tk()
         try:
@@ -1262,6 +1278,11 @@ class CountdownWidget:
         lunch_notification_var = tk.BooleanVar(value=bool(notifications.get("lunch", True)))
         off_work_notification_var = tk.BooleanVar(value=bool(notifications.get("off_work", True)))
         sound_notification_var = tk.BooleanVar(value=bool(notifications.get("sound", False)))
+        lead_minutes_var = tk.IntVar(value=max(0, min(120, int(notifications.get("lead_minutes", 0)))))
+        quiet_hours = notifications.get("quiet_hours", {})
+        quiet_hours_enabled_var = tk.BooleanVar(value=bool(quiet_hours.get("enabled", False)))
+        quiet_start_var = tk.StringVar(value=str(quiet_hours.get("start", "22:00")))
+        quiet_end_var = tk.StringVar(value=str(quiet_hours.get("end", "08:00")))
         notification_checks = (
             (notifications_enabled_var, "启用 Windows 提醒"),
             (lunch_notification_var, "午休开始时提醒"),
@@ -1280,6 +1301,47 @@ class CountdownWidget:
                 selectcolor="#26313A",
                 font=("Microsoft YaHei UI", 9),
             ).grid(row=row // 2, column=row % 2, padx=(0, 18), pady=2, sticky="w")
+        tk.Label(
+            notification_frame,
+            text="提前提醒分钟（0=关闭）",
+            bg=background,
+            fg=foreground,
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=2, column=0, padx=(0, 12), pady=(8, 2), sticky="w")
+        tk.Spinbox(
+            notification_frame,
+            from_=0,
+            to=120,
+            textvariable=lead_minutes_var,
+            width=6,
+            font=("Consolas", 10),
+            relief="flat",
+        ).grid(row=2, column=1, padx=(0, 18), pady=(8, 2), sticky="w")
+        tk.Checkbutton(
+            notification_frame,
+            text="启用免打扰时段",
+            variable=quiet_hours_enabled_var,
+            bg=background,
+            fg=foreground,
+            activebackground=background,
+            activeforeground=foreground,
+            selectcolor="#26313A",
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=3, column=0, padx=(0, 12), pady=2, sticky="w")
+        quiet_time_frame = tk.Frame(notification_frame, bg=background)
+        quiet_time_frame.grid(row=3, column=1, columnspan=2, padx=(0, 18), pady=2, sticky="w")
+        tk.Label(quiet_time_frame, text="从", bg=background, fg=muted, font=("Microsoft YaHei UI", 9)).pack(side="left")
+        tk.Entry(quiet_time_frame, textvariable=quiet_start_var, width=7, font=("Consolas", 10), relief="flat").pack(side="left", padx=(4, 8))
+        tk.Label(quiet_time_frame, text="到", bg=background, fg=muted, font=("Microsoft YaHei UI", 9)).pack(side="left")
+        tk.Entry(quiet_time_frame, textvariable=quiet_end_var, width=7, font=("Consolas", 10), relief="flat").pack(side="left", padx=(4, 0))
+        tk.Button(
+            notification_frame,
+            text="发送测试提醒",
+            command=self.test_notification,
+            relief="flat",
+            padx=8,
+            pady=3,
+        ).grid(row=4, column=0, columnspan=2, padx=0, pady=(8, 0), sticky="w")
 
         actions = tk.Frame(shell, bg=background)
         actions.pack(fill="x")
@@ -1324,6 +1386,12 @@ class CountdownWidget:
                     "lunch": bool(lunch_notification_var.get()),
                     "off_work": bool(off_work_notification_var.get()),
                     "sound": bool(sound_notification_var.get()),
+                    "lead_minutes": max(0, min(120, int(lead_minutes_var.get()))),
+                    "quiet_hours": {
+                        "enabled": bool(quiet_hours_enabled_var.get()),
+                        "start": format_clock(parse_clock(quiet_start_var.get().strip())),
+                        "end": format_clock(parse_clock(quiet_end_var.get().strip())),
+                    },
                 }
                 WorkSchedule(candidate)
                 WorkCalendar(candidate)
@@ -1444,26 +1512,72 @@ class CountdownWidget:
         self.root.after(1000, self.update)
 
     def maybe_notify(self, state, now):
-        """Notify once when the widget enters a configured workday state."""
+        """Send transition and optional lead-time notifications once per day."""
         current_date = now.date()
         if self.last_state_date != current_date:
             self.last_state_date = current_date
             self.last_state_kind = None
+            self.sent_alerts.clear()
 
         previous_kind = self.last_state_kind
         current_kind = state.get("kind")
         self.last_state_kind = current_kind
-        if previous_kind is None or previous_kind == current_kind:
-            return
 
         notifications = self.config.get("notifications", {})
-        if not bool(notifications.get("enabled", True)):
+        if not bool(notifications.get("enabled", True)) or self.is_quiet_hours(now):
             return
 
+        lead_minutes = max(0, min(120, int(notifications.get("lead_minutes", 0))))
+        if lead_minutes:
+            lead_delta = timedelta(minutes=lead_minutes)
+            for event_key, event_at, title, message in self.schedule.notification_events(now.date(), self.calendar):
+                if event_at - lead_delta <= now < event_at:
+                    enabled = notifications.get("lunch", True) if event_key == "lunch" else notifications.get("off_work", True)
+                    if enabled:
+                        self.send_notification_once(
+                            ("lead", event_key),
+                            f"{title}提醒",
+                            f"{lead_minutes} 分钟后{message.rstrip('。')}。",
+                            notifications,
+                        )
+
+        if previous_kind is None or previous_kind == current_kind:
+            return
         if current_kind == "lunch" and bool(notifications.get("lunch", True)):
-            self.notify_user("午休提醒", "午休开始了，休息一下吧。", notifications)
-        elif current_kind == "off_work" and bool(notifications.get("off_work", True)):
-            self.notify_user("下班提醒", "下班时间到了，今天辛苦了。", notifications)
+            self.send_notification_once(
+                ("transition", "lunch"), "午休提醒", "午休开始了，休息一下吧。", notifications
+            )
+        elif current_kind in ("off_work", "overtime") and previous_kind in ("afternoon", "morning"):
+            if bool(notifications.get("off_work", True)):
+                self.send_notification_once(
+                    ("transition", "off_work"), "下班提醒", "下班时间到了，今天辛苦了。", notifications
+                )
+
+    def is_quiet_hours(self, now):
+        quiet_hours = self.config.get("notifications", {}).get("quiet_hours", {})
+        if not bool(quiet_hours.get("enabled", False)):
+            return False
+        try:
+            start = parse_clock(str(quiet_hours.get("start", "22:00")))
+            end = parse_clock(str(quiet_hours.get("end", "08:00")))
+        except (TypeError, ValueError):
+            return False
+        current = now.time()
+        if start == end:
+            return False
+        if start < end:
+            return start <= current < end
+        return current >= start or current < end
+
+    def send_notification_once(self, key, title, message, notifications):
+        if key in self.sent_alerts:
+            return
+        self.notify_user(title, message, notifications)
+        self.sent_alerts.add(key)
+
+    def test_notification(self):
+        notifications = self.config.get("notifications", {})
+        self.notify_user("提醒测试", "班时钟提醒功能正常。", notifications)
 
     def notify_user(self, title, message, notifications):
         """Send a tray notification and optionally play the Windows sound."""
