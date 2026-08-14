@@ -43,7 +43,8 @@
   "display": {
     "compact": false,
     "show_seconds": true,
-    "show_schedule": true
+    "show_schedule": true,
+    "progress_mode": "wall_clock"
   },
   "style": {
     "theme": "dark",

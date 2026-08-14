@@ -200,9 +200,31 @@ class WorkSchedule:
         events.append(("off_work", self.at(target_date, self.off_work), "下班", "下班时间到了，今天辛苦了。"))
         return events
 
-    def progress(self, now: datetime, calendar: WorkCalendar) -> float:
+    def progress(self, now: datetime, calendar: WorkCalendar, mode: str = "wall_clock") -> float:
         if not calendar.is_workday(now.date()):
             return 0.0
+        if mode == "active_work":
+            total_seconds = sum(
+                (
+                    self.at(now.date(), end) - self.at(now.date(), start)
+                ).total_seconds()
+                for start, end in self.work_segments
+            )
+            if total_seconds <= 0:
+                return 0.0
+            elapsed_seconds = 0.0
+            for start, end in self.work_segments:
+                segment_start = self.at(now.date(), start)
+                segment_end = self.at(now.date(), end)
+                elapsed_seconds += max(
+                    0.0,
+                    min(
+                        (now - segment_start).total_seconds(),
+                        (segment_end - segment_start).total_seconds(),
+                    ),
+                )
+            return max(0.0, min(1.0, elapsed_seconds / total_seconds))
+
         start = self.at(now.date(), self.morning_start)
         end = self.at(now.date(), self.off_work)
         total_seconds = (end - start).total_seconds()

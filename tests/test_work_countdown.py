@@ -123,6 +123,20 @@ class WorkCountdownTests(unittest.TestCase):
         self.assertAlmostEqual(self.schedule.progress(datetime(2026, 8, 14, 13, 30), self.calendar), 0.5)
         self.assertEqual(self.schedule.progress(datetime(2026, 8, 14, 20, 0), self.calendar), 1.0)
 
+    def test_active_work_progress_excludes_breaks(self):
+        self.assertAlmostEqual(
+            self.schedule.progress(datetime(2026, 8, 14, 12, 0), self.calendar, "active_work"),
+            0.4,
+        )
+        self.assertAlmostEqual(
+            self.schedule.progress(datetime(2026, 8, 14, 13, 0), self.calendar, "active_work"),
+            0.4,
+        )
+        self.assertAlmostEqual(
+            self.schedule.progress(datetime(2026, 8, 14, 15, 45), self.calendar, "active_work"),
+            0.7,
+        )
+
     def test_legacy_config_migration_and_deep_merge(self):
         legacy = {"lunch_time": "12:30", "off_work_time": "18:30"}
         migrated = app.migrate_legacy_config(legacy)

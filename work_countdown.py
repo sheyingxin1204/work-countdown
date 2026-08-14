@@ -171,6 +171,7 @@ DEFAULT_CONFIG = {
         "compact": False,
         "show_seconds": True,
         "show_schedule": True,
+        "progress_mode": "wall_clock",
     },
     "style": {
         "theme": "dark",
@@ -179,6 +180,11 @@ DEFAULT_CONFIG = {
         "muted": "#9BA7B0",
         "accent": "#39A0ED",
     },
+}
+
+PROGRESS_MODE_LABELS = {
+    "wall_clock": "自然时间（含午休）",
+    "active_work": "实际工作时长（不含休息）",
 }
 
 THEME_PRESETS = {
@@ -1414,6 +1420,10 @@ class CountdownWidget:
         compact_var = tk.BooleanVar(value=bool(display.get("compact", False)))
         show_seconds_var = tk.BooleanVar(value=bool(display.get("show_seconds", True)))
         show_schedule_var = tk.BooleanVar(value=bool(display.get("show_schedule", True)))
+        progress_mode = str(display.get("progress_mode", "wall_clock"))
+        progress_mode_var = tk.StringVar(
+            value=PROGRESS_MODE_LABELS.get(progress_mode, PROGRESS_MODE_LABELS["wall_clock"])
+        )
         display_checks = (
             (compact_var, "紧凑模式（隐藏时间段）"),
             (show_seconds_var, "显示秒数"),
@@ -1431,6 +1441,16 @@ class CountdownWidget:
                 selectcolor="#26313A",
                 font=("Microsoft YaHei UI", 9),
             ).grid(row=3 + row // 2, column=row % 2, padx=(0, 18), pady=2, sticky="w")
+        tk.Label(
+            display_frame,
+            text="进度计算",
+            bg=background,
+            fg=foreground,
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=5, column=0, padx=(0, 6), pady=(8, 0), sticky="w")
+        progress_mode_menu = tk.OptionMenu(display_frame, progress_mode_var, *PROGRESS_MODE_LABELS.values())
+        progress_mode_menu.configure(relief="flat", highlightthickness=0, font=("Microsoft YaHei UI", 9))
+        progress_mode_menu.grid(row=5, column=1, columnspan=2, padx=(0, 18), pady=(8, 0), sticky="w")
 
         notification_frame = tk.LabelFrame(
             notification_tab,
@@ -1570,6 +1590,14 @@ class CountdownWidget:
                     "compact": bool(compact_var.get()),
                     "show_seconds": bool(show_seconds_var.get()),
                     "show_schedule": bool(show_schedule_var.get()),
+                    "progress_mode": next(
+                        (
+                            key
+                            for key, label in PROGRESS_MODE_LABELS.items()
+                            if label == progress_mode_var.get()
+                        ),
+                        "wall_clock",
+                    ),
                 }
                 candidate["notifications"] = {
                     "enabled": bool(notifications_enabled_var.get()),
@@ -1953,7 +1981,8 @@ class CountdownWidget:
         )
         self.countdown_label.configure(text=state["countdown_name"])
         self.countdown_value.configure(text=format_remaining(state["countdown_at"] - now))
-        self.update_progress(self.schedule.progress(now, self.calendar))
+        progress_mode = self.config.get("display", {}).get("progress_mode", "wall_clock")
+        self.update_progress(self.schedule.progress(now, self.calendar, progress_mode))
         show_seconds = bool(self.config.get("display", {}).get("show_seconds", True))
         clock_format = "%Y-%m-%d %H:%M:%S" if show_seconds else "%Y-%m-%d %H:%M"
         self.clock_label.configure(text=now.strftime(clock_format))
