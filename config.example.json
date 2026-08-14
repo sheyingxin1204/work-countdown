@@ -23,6 +23,11 @@
     "off_work": true,
     "sound": false
   },
+  "display": {
+    "compact": false,
+    "show_seconds": true,
+    "show_schedule": true
+  },
   "style": {
     "background": "#101418",
     "foreground": "#F3F7FA",

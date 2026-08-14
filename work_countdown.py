@@ -127,6 +127,11 @@ DEFAULT_CONFIG = {
         "off_work": True,
         "sound": False,
     },
+    "display": {
+        "compact": False,
+        "show_seconds": True,
+        "show_schedule": True,
+    },
     "style": {
         "background": "#101418",
         "foreground": "#F3F7FA",
@@ -268,6 +273,18 @@ class WorkSchedule:
     def afternoon_range_text(self):
         return f"{format_clock(self.afternoon_start)} - {format_clock(self.off_work)}"
 
+    def progress(self, now, calendar):
+        """Return the elapsed fraction of the workday, clamped to 0..1."""
+        if not calendar.is_workday(now.date()):
+            return 0.0
+        start = self.at(now.date(), self.morning_start)
+        end = self.at(now.date(), self.off_work)
+        total_seconds = (end - start).total_seconds()
+        if total_seconds <= 0:
+            return 0.0
+        elapsed_seconds = (now - start).total_seconds()
+        return max(0.0, min(1.0, elapsed_seconds / total_seconds))
+
     def state(self, now, calendar):
         today = now.date()
 
@@ -338,6 +355,14 @@ class CountdownWidget:
         self.last_state_date = None
 
         self.root = tk.Tk()
+        try:
+            tk_scaling = float(self.root.tk.call("tk", "scaling"))
+        except (tk.TclError, TypeError, ValueError):
+            tk_scaling = 1.0
+        # Tk fonts follow the Windows DPI setting automatically. Use the same
+        # scale for pixel-sized controls so the progress indicator and window
+        # spacing remain balanced on high-DPI displays.
+        self.ui_scale = max(1.0, min(2.0, tk_scaling / 1.3333))
         self.root.title(APP_NAME)
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", bool(self.config["window"]["always_on_top"]))
@@ -348,8 +373,8 @@ class CountdownWidget:
         self.frame = tk.Frame(
             self.root,
             bg=self.config["style"]["background"],
-            padx=18,
-            pady=14,
+            padx=round(18 * self.ui_scale),
+            pady=round(14 * self.ui_scale),
             highlightthickness=1,
             highlightbackground="#26313A",
         )
@@ -363,6 +388,26 @@ class CountdownWidget:
             font=("Microsoft YaHei UI", 10),
         )
         self.title_label.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        self.progress_width = round(240 * self.ui_scale)
+        self.progress_height = max(6, round(8 * self.ui_scale))
+        self.progress_canvas = tk.Canvas(
+            self.frame,
+            width=self.progress_width,
+            height=self.progress_height,
+            bg="#26313A",
+            highlightthickness=0,
+            bd=0,
+        )
+        self.progress_canvas.grid(row=1, column=0, columnspan=2, sticky="we", pady=(0, 8))
+        self.progress_fill = self.progress_canvas.create_rectangle(
+            0,
+            0,
+            0,
+            self.progress_height,
+            fill=self.config["style"]["accent"],
+            outline="",
+        )
 
         self.status_label = self.create_name_label("当前")
         self.status_value = self.create_text_value_label()
@@ -379,15 +424,15 @@ class CountdownWidget:
             font=("Microsoft YaHei UI", 9),
         )
 
-        self.status_label.grid(row=1, column=0, sticky="w", pady=3)
-        self.status_value.grid(row=1, column=1, sticky="e", padx=(18, 0), pady=3)
-        self.countdown_label.grid(row=2, column=0, sticky="w", pady=3)
-        self.countdown_value.grid(row=2, column=1, sticky="e", padx=(18, 0), pady=3)
-        self.morning_label.grid(row=3, column=0, sticky="w", pady=(12, 3))
-        self.morning_value.grid(row=3, column=1, sticky="e", padx=(18, 0), pady=(12, 3))
-        self.afternoon_label.grid(row=4, column=0, sticky="w", pady=3)
-        self.afternoon_value.grid(row=4, column=1, sticky="e", padx=(18, 0), pady=3)
-        self.clock_label.grid(row=5, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        self.status_label.grid(row=2, column=0, sticky="w", pady=3)
+        self.status_value.grid(row=2, column=1, sticky="e", padx=(18, 0), pady=3)
+        self.countdown_label.grid(row=3, column=0, sticky="w", pady=3)
+        self.countdown_value.grid(row=3, column=1, sticky="e", padx=(18, 0), pady=3)
+        self.morning_label.grid(row=4, column=0, sticky="w", pady=(12, 3))
+        self.morning_value.grid(row=4, column=1, sticky="e", padx=(18, 0), pady=(12, 3))
+        self.afternoon_label.grid(row=5, column=0, sticky="w", pady=3)
+        self.afternoon_value.grid(row=5, column=1, sticky="e", padx=(18, 0), pady=3)
+        self.clock_label.grid(row=6, column=0, columnspan=2, sticky="e", pady=(8, 0))
 
         self.menu = tk.Menu(self.root, tearoff=0)
         self.menu.add_command(label="打开设置中心", command=self.open_schedule_settings)
@@ -400,6 +445,7 @@ class CountdownWidget:
             self.root,
             self.frame,
             self.title_label,
+            self.progress_canvas,
             self.status_label,
             self.status_value,
             self.countdown_label,
@@ -416,6 +462,7 @@ class CountdownWidget:
             widget.bind("<Button-3>", self.show_menu)
 
         self.refresh_static_ranges()
+        self.apply_display_preferences()
         self.place_window()
         self.start_tray()
         self.update()
@@ -460,6 +507,25 @@ class CountdownWidget:
     def refresh_static_ranges(self):
         self.morning_value.configure(text=self.schedule.morning_range_text())
         self.afternoon_value.configure(text=self.schedule.afternoon_range_text())
+
+    def apply_display_preferences(self):
+        display = self.config.get("display", {})
+        show_schedule = bool(display.get("show_schedule", True)) and not bool(display.get("compact", False))
+        schedule_widgets = (
+            self.morning_label,
+            self.morning_value,
+            self.afternoon_label,
+            self.afternoon_value,
+        )
+        for widget in schedule_widgets:
+            if show_schedule:
+                widget.grid()
+            else:
+                widget.grid_remove()
+
+    def update_progress(self, progress):
+        width = max(0, min(self.progress_width, round(self.progress_width * progress)))
+        self.progress_canvas.coords(self.progress_fill, 0, 0, width, self.progress_height)
 
     def place_window(self):
         self.root.update_idletasks()
@@ -795,6 +861,27 @@ class CountdownWidget:
             font=("Consolas", 10),
             relief="flat",
         ).grid(row=2, column=1, padx=(12, 0), pady=(8, 0), sticky="w")
+        display = self.config.get("display", {})
+        compact_var = tk.BooleanVar(value=bool(display.get("compact", False)))
+        show_seconds_var = tk.BooleanVar(value=bool(display.get("show_seconds", True)))
+        show_schedule_var = tk.BooleanVar(value=bool(display.get("show_schedule", True)))
+        display_checks = (
+            (compact_var, "紧凑模式（隐藏时间段）"),
+            (show_seconds_var, "显示秒数"),
+            (show_schedule_var, "显示上下班时间段"),
+        )
+        for row, (variable, label) in enumerate(display_checks):
+            tk.Checkbutton(
+                display_frame,
+                text=label,
+                variable=variable,
+                bg=background,
+                fg=foreground,
+                activebackground=background,
+                activeforeground=foreground,
+                selectcolor="#26313A",
+                font=("Microsoft YaHei UI", 9),
+            ).grid(row=3 + row // 2, column=row % 2, padx=(0, 18), pady=2, sticky="w")
 
         notification_frame = tk.LabelFrame(
             shell,
@@ -851,6 +938,11 @@ class CountdownWidget:
                 candidate["window"]["alpha"] = round(float(alpha_var.get()), 2)
                 candidate["window"]["always_on_top"] = bool(topmost_var.get())
                 candidate["window"]["margin"] = max(8, min(64, int(margin_var.get())))
+                candidate["display"] = {
+                    "compact": bool(compact_var.get()),
+                    "show_seconds": bool(show_seconds_var.get()),
+                    "show_schedule": bool(show_schedule_var.get()),
+                }
                 candidate["notifications"] = {
                     "enabled": bool(notifications_enabled_var.get()),
                     "lunch": bool(lunch_notification_var.get()),
@@ -898,6 +990,7 @@ class CountdownWidget:
         self.root.attributes("-alpha", float(self.config["window"]["alpha"]))
         self.root.attributes("-topmost", bool(self.config["window"]["always_on_top"]))
         self.refresh_static_ranges()
+        self.apply_display_preferences()
         self.place_window()
         self.update_display()
 
@@ -954,10 +1047,24 @@ class CountdownWidget:
         state = self.schedule.state(now, self.calendar)
         self.maybe_notify(state, now)
 
-        self.status_value.configure(text=state["status"])
+        status_colors = {
+            "rest": self.config["style"]["muted"],
+            "before_work": self.config["style"]["accent"],
+            "morning": "#51D88A",
+            "lunch": "#F5B84B",
+            "afternoon": self.config["style"]["accent"],
+            "off_work": "#A78BFA",
+        }
+        self.status_value.configure(
+            text=state["status"],
+            fg=status_colors.get(state.get("kind"), self.config["style"]["accent"]),
+        )
         self.countdown_label.configure(text=state["countdown_name"])
         self.countdown_value.configure(text=format_remaining(state["countdown_at"] - now))
-        self.clock_label.configure(text=now.strftime("%Y-%m-%d %H:%M:%S"))
+        self.update_progress(self.schedule.progress(now, self.calendar))
+        show_seconds = bool(self.config.get("display", {}).get("show_seconds", True))
+        clock_format = "%Y-%m-%d %H:%M:%S" if show_seconds else "%Y-%m-%d %H:%M"
+        self.clock_label.configure(text=now.strftime(clock_format))
 
     def quit(self):
         if self.is_closing:
