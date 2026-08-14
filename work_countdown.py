@@ -1,4 +1,6 @@
 import json
+import ctypes
+import os
 import sys
 import threading
 from copy import deepcopy
@@ -24,6 +26,70 @@ else:
 CONFIG_PATH = APP_DIR / "config.json"
 APP_NAME = "班时钟"
 ICON_RELATIVE_PATH = Path("assets") / "ban-clock-icon.png"
+SINGLE_INSTANCE_MUTEX = None
+
+
+class _Point(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+class _Rect(ctypes.Structure):
+    _fields_ = [
+        ("left", ctypes.c_long),
+        ("top", ctypes.c_long),
+        ("right", ctypes.c_long),
+        ("bottom", ctypes.c_long),
+    ]
+
+
+class _MonitorInfo(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.c_uint), ("rcMonitor", _Rect), ("rcWork", _Rect), ("dwFlags", ctypes.c_uint)]
+
+
+def acquire_single_instance():
+    """Keep only one running instance on Windows."""
+    global SINGLE_INSTANCE_MUTEX
+    if os.name != "nt":
+        return True
+
+    try:
+        kernel32 = ctypes.windll.kernel32
+        mutex = kernel32.CreateMutexW(None, False, "Local\\BanClock.SingleInstance")
+        if not mutex:
+            return True
+        if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            kernel32.CloseHandle(mutex)
+            return False
+        SINGLE_INSTANCE_MUTEX = mutex
+    except (AttributeError, OSError):
+        return True
+    return True
+
+
+def get_monitor_work_area(root, x=None, y=None):
+    """Return the usable work area for the monitor containing a point."""
+    if x is None:
+        x = root.winfo_pointerx()
+    if y is None:
+        y = root.winfo_pointery()
+
+    if os.name == "nt":
+        try:
+            user32 = ctypes.windll.user32
+            user32.MonitorFromPoint.argtypes = [_Point, ctypes.c_uint]
+            user32.MonitorFromPoint.restype = ctypes.c_void_p
+            user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.POINTER(_MonitorInfo)]
+            user32.GetMonitorInfoW.restype = ctypes.c_int
+            monitor = user32.MonitorFromPoint(_Point(int(x), int(y)), 2)
+            info = _MonitorInfo()
+            info.cbSize = ctypes.sizeof(_MonitorInfo)
+            if monitor and user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                work = info.rcWork
+                return work.left, work.top, work.right, work.bottom
+        except (AttributeError, OSError, TypeError):
+            pass
+
+    return 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
 
 
 def resource_path(relative_path):
@@ -46,6 +112,7 @@ DEFAULT_CONFIG = {
     "window": {
         "x": None,
         "y": None,
+        "margin": 18,
         "alpha": 0.88,
         "always_on_top": True,
     },
@@ -365,18 +432,27 @@ class CountdownWidget:
         window = self.config["window"]
         width = self.root.winfo_reqwidth()
         height = self.root.winfo_reqheight()
-        max_x = max(0, self.root.winfo_screenwidth() - width)
-        max_y = max(0, self.root.winfo_screenheight() - height)
+        margin = max(0, int(window.get("margin", 18)))
 
         try:
             x = int(window.get("x"))
             y = int(window.get("y"))
         except (TypeError, ValueError):
-            x = max_x // 2
-            y = max_y // 6
+            x = None
+            y = None
 
-        x = min(max(0, x), max_x)
-        y = min(max(0, y), max_y)
+        left, top, right, bottom = get_monitor_work_area(self.root, x, y)
+        min_x = left
+        min_y = top
+        max_x = max(min_x, right - width)
+        max_y = max(min_y, bottom - height)
+
+        if x is None or y is None:
+            x = max(min_x, right - width - margin)
+            y = max(min_y, bottom - height - margin)
+
+        x = min(max(min_x, x), max_x)
+        y = min(max(min_y, y), max_y)
         self.root.geometry(f"+{x}+{y}")
 
     def start_drag(self, event):
@@ -581,6 +657,8 @@ class CountdownWidget:
 
 
 def main():
+    if not acquire_single_instance():
+        return
     try:
         CountdownWidget().run()
     except Exception as error:

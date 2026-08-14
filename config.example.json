@@ -13,6 +13,7 @@
   "window": {
     "x": null,
     "y": null,
+    "margin": 18,
     "alpha": 0.88,
     "always_on_top": true
   },
