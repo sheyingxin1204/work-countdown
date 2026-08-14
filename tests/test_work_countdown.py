@@ -160,6 +160,10 @@ class WorkCountdownTests(unittest.TestCase):
         self.assertEqual(app.version_tuple("v1.2.3"), (1, 2, 3))
         self.assertGreater(app.version_tuple("1.10.0"), app.version_tuple("1.9.9"))
 
+    def test_accessibility_theme_is_available(self):
+        self.assertEqual(app.THEME_LABELS["contrast"], "高对比度")
+        self.assertEqual(app.THEME_PRESETS["contrast"]["background"], "#000000")
+
     def test_corrupt_config_is_backed_up_and_restored(self):
         with TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

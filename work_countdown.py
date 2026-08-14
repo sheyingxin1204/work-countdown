@@ -24,6 +24,7 @@ from app_updates import (
 from app_updates import (
     version_tuple as _version_tuple,
 )
+from desktop_hotkeys import GlobalHotkeyListener
 from holiday_sync import (
     HOLIDAY_SOURCE_URL,
     fetch_holiday_calendar,
@@ -214,8 +215,15 @@ THEME_PRESETS = {
         "muted": "#8DB8CC",
         "accent": "#42C6E8",
     },
+    "contrast": {
+        "theme": "contrast",
+        "background": "#000000",
+        "foreground": "#FFFFFF",
+        "muted": "#FFFF00",
+        "accent": "#00FF00",
+    },
 }
-THEME_LABELS = {"dark": "深色", "light": "浅色", "ocean": "海洋蓝"}
+THEME_LABELS = {"dark": "深色", "light": "浅色", "ocean": "海洋蓝", "contrast": "高对比度"}
 
 
 def deep_merge(base, override):
@@ -496,6 +504,7 @@ class CountdownWidget:
         self.sent_alerts = set()
         self.stats_tracker = StatsTracker(stats_path())
         self.stats_dialog = None
+        self.global_hotkeys = GlobalHotkeyListener(self.handle_global_hotkey)
 
         self.root = tk.Tk()
         try:
@@ -512,8 +521,11 @@ class CountdownWidget:
         self.root.attributes("-alpha", float(self.config["window"]["alpha"]))
         self.root.configure(bg=self.config["style"]["background"])
         self.root.protocol("WM_DELETE_WINDOW", self.hide_window)
-        self.root.bind_all("<Control-Shift-b>", lambda _event: self.toggle_window())
-        self.root.bind_all("<Control-Shift-s>", lambda _event: self.open_schedule_settings())
+        if not self.global_hotkeys.start():
+            # Non-Windows source runs still get shortcuts while the window is
+            # focused; the packaged Windows app uses true global hotkeys.
+            self.root.bind_all("<Control-Shift-b>", lambda _event: self.toggle_window())
+            self.root.bind_all("<Control-Shift-s>", lambda _event: self.open_schedule_settings())
 
         self.frame = tk.Frame(
             self.root,
@@ -586,6 +598,7 @@ class CountdownWidget:
         self.menu.add_command(label="检查更新", command=self.check_for_updates)
         self.menu.add_command(label="打开配置目录", command=self.open_config_folder)
         self.menu.add_command(label="恢复默认位置", command=self.reset_position)
+        self.menu.add_command(label="移动到当前显示器", command=self.move_to_pointer_monitor)
         self.menu.add_command(label=f"关于{APP_NAME}", command=self.show_about)
         self.menu.add_separator()
         self.menu.add_command(label="隐藏到系统托盘", command=self.hide_window)
@@ -611,6 +624,7 @@ class CountdownWidget:
             widget.bind("<ButtonRelease-1>", self.save_position)
             widget.bind("<Button-3>", self.show_menu)
 
+        self.apply_style()
         self.refresh_static_ranges()
         self.apply_display_preferences()
         self.place_window()
@@ -664,8 +678,9 @@ class CountdownWidget:
         foreground = style["foreground"]
         muted = style["muted"]
         accent = style["accent"]
+        track_color = "#FFFFFF" if style.get("theme") == "contrast" else "#26313A"
         self.root.configure(bg=background)
-        self.frame.configure(bg=background, highlightbackground="#26313A")
+        self.frame.configure(bg=background, highlightbackground=track_color)
         for widget in (self.title_label, self.clock_label):
             widget.configure(bg=background, fg=muted)
         for widget in (self.status_label, self.countdown_label, self.morning_label, self.afternoon_label):
@@ -674,7 +689,7 @@ class CountdownWidget:
         for widget in (self.morning_value, self.afternoon_value):
             widget.configure(bg=background, fg=foreground)
         self.status_value.configure(bg=background, fg=accent)
-        self.progress_canvas.configure(bg="#26313A")
+        self.progress_canvas.configure(bg=track_color)
         self.progress_canvas.itemconfigure(self.progress_fill, fill=accent)
 
     def apply_display_preferences(self):
@@ -744,6 +759,13 @@ class CountdownWidget:
         save_config(self.config)
         self.place_window()
 
+    def move_to_pointer_monitor(self):
+        """Move the widget to the monitor currently under the mouse pointer."""
+        self.config["window"]["x"] = None
+        self.config["window"]["y"] = None
+        save_config(self.config)
+        self.place_window()
+
     def show_menu(self, event):
         self.menu.tk_popup(event.x_root, event.y_root)
 
@@ -777,6 +799,10 @@ class CountdownWidget:
                 pystray.MenuItem(
                     "重新加载配置",
                     lambda _icon, _item: self.call_on_ui(self.reload_config),
+                ),
+                pystray.MenuItem(
+                    "移动到当前显示器",
+                    lambda _icon, _item: self.call_on_ui(self.move_to_pointer_monitor),
                 ),
                 pystray.MenuItem(
                     "检查更新",
@@ -1952,6 +1978,7 @@ class CountdownWidget:
                 self.stats_dialog.destroy()
             except tk.TclError:
                 pass
+        self.global_hotkeys.stop()
         try:
             now = datetime.now()
             state = self.schedule.state(now, self.calendar)
@@ -1985,6 +2012,12 @@ def main():
             messagebox.showerror(APP_NAME, str(error))
         except tk.TclError:
             pass
+
+    def handle_global_hotkey(self, hotkey_id):
+        if hotkey_id == 1:
+            self.call_on_ui(self.toggle_window)
+        elif hotkey_id == 2:
+            self.call_on_ui(self.open_schedule_settings)
         sys.exit(1)
 
 

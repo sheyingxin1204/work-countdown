@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Push-Location $projectDir
 try {
-    python -m py_compile work_countdown.py work_core.py holiday_sync.py work_stats.py app_updates.py
+    python -m py_compile work_countdown.py work_core.py holiday_sync.py work_stats.py app_updates.py desktop_hotkeys.py
     if ($LASTEXITCODE -ne 0) { throw "Python compile check failed." }
 
     python -m unittest discover -s tests -v
@@ -11,10 +11,10 @@ try {
 
     & (Join-Path $projectDir "test_update_helper.ps1")
 
-    ruff check work_core.py holiday_sync.py work_stats.py app_updates.py work_countdown.py tests
+    ruff check work_core.py holiday_sync.py work_stats.py app_updates.py desktop_hotkeys.py work_countdown.py tests
     if ($LASTEXITCODE -ne 0) { throw "Ruff check failed." }
 
-    mypy work_core.py holiday_sync.py work_stats.py app_updates.py
+    mypy work_core.py holiday_sync.py work_stats.py app_updates.py desktop_hotkeys.py
     if ($LASTEXITCODE -ne 0) { throw "Mypy check failed." }
 
     if (Test-Path -LiteralPath "dist") {

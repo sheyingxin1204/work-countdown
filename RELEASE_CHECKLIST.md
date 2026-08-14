@@ -11,8 +11,8 @@
 运行以下命令：
 
     python -m unittest discover -s tests -v
-    ruff check work_core.py holiday_sync.py work_stats.py app_updates.py work_countdown.py tests
-    mypy work_core.py holiday_sync.py work_stats.py app_updates.py
+    ruff check work_core.py holiday_sync.py work_stats.py app_updates.py desktop_hotkeys.py work_countdown.py tests
+    mypy work_core.py holiday_sync.py work_stats.py app_updates.py desktop_hotkeys.py
     .\build_exe.ps1
     .\smoke_exe.ps1
     .\build_installer.ps1
@@ -32,4 +32,3 @@
 - [ ] 在全新 Windows 账户安装，验证右下角定位、日历同步、统计、更新助手和卸载。
 - [ ] 下载一个旧版本可用的更新包，验证更新助手会备份旧文件；故意提供损坏包，验证回滚后旧版本仍可启动。
 - [ ] 至少连续运行 2 个工作日，确认休眠/唤醒、跨午夜、网络离线和多显示器场景无异常，再把 RC 标记为稳定版。
-
