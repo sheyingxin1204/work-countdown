@@ -34,6 +34,7 @@ Name: "startupicon"; Description: "登录 Windows 时自动启动"; GroupDescrip
 
 [Files]
 Source: "dist\班时钟.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "update_helper.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

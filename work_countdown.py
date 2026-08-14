@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import tempfile
@@ -1552,13 +1553,49 @@ class CountdownWidget:
 
     def update_download_result(self, target_path, digest):
         self.update_thread = None
-        should_open = messagebox.askyesno(
+        can_install = bool(getattr(sys, "frozen", False) and (APP_DIR / "update_helper.ps1").exists())
+        should_install = messagebox.askyesno(
             "下载完成",
-                f"文件已通过 SHA-256 校验：\n{target_path}\n\n是否打开下载目录？",
+            f"文件已通过 SHA-256 校验：\n{target_path}\n\n"
+            + ("是否立即替换当前版本并重启？" if can_install else "当前为开发模式，请打开下载目录手动运行新版本。"),
             parent=self.root,
         )
-        if should_open:
+        if should_install and can_install:
+            self.start_update_helper(target_path)
+        elif should_install:
             self.open_updates_folder()
+
+    def start_update_helper(self, package_path):
+        helper_path = APP_DIR / "update_helper.ps1"
+        if not helper_path.exists() or not getattr(sys, "frozen", False):
+            self.open_updates_folder()
+            return
+        target_path = Path(sys.executable).resolve()
+        backup_path = target_path.with_suffix(target_path.suffix + ".previous")
+        try:
+            subprocess.Popen(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(helper_path),
+                    "-Target",
+                    str(target_path),
+                    "-Package",
+                    str(package_path),
+                    "-ProcessId",
+                    str(os.getpid()),
+                    "-Backup",
+                    str(backup_path),
+                ],
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                close_fds=True,
+            )
+            self.quit()
+        except OSError as error:
+            messagebox.showerror("启动更新失败", str(error), parent=self.root)
 
     def update(self):
         self.update_display()
