@@ -32,6 +32,12 @@ python -m pip install -r requirements-build.txt
 
 生成文件：`dist\班时钟.exe`。它可以在没有 Python 环境的 Windows 电脑上直接运行。
 
+运行自动化测试：
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
 ## 设置上下班时间
 
 在悬浮窗上右键，选择“打开设置中心”，可以集中配置：
@@ -92,3 +98,5 @@ python -m pip install -r requirements-build.txt
 ## 配置说明
 
 配置文件位于 `%APPDATA%\BanClock\config.json`，是本机个人配置，不会提交到 Git。可参考 `config.example.json` 手动配置周末、节假日、调休、透明度、窗口置顶、提醒和显示模式等选项。
+
+运行日志位于 `%APPDATA%\BanClock\ban_clock.log`。如果配置文件损坏，程序会先保留 `config.broken.*.json` 备份，再恢复默认配置。

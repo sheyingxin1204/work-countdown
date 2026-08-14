@@ -1,5 +1,6 @@
 import ctypes
 import json
+import logging
 import os
 import re
 import shutil
@@ -13,6 +14,7 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox
+from logging.handlers import RotatingFileHandler
 
 try:
     import pystray
@@ -43,8 +45,10 @@ else:
     _appdata_root = APP_DIR
 USER_CONFIG_DIR = _appdata_root / "BanClock"
 CONFIG_PATH = USER_CONFIG_DIR / "config.json"
+LOG_PATH = USER_CONFIG_DIR / "ban_clock.log"
 ICON_RELATIVE_PATH = Path("assets") / "ban-clock-icon.png"
 SINGLE_INSTANCE_MUTEX = None
+LOGGER = logging.getLogger("ban_clock")
 
 
 class _Point(ctypes.Structure):
@@ -164,6 +168,27 @@ def deep_merge(base, override):
     return result
 
 
+def setup_logging():
+    if logging.getLogger().handlers:
+        return
+    try:
+        USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            LOG_PATH,
+            maxBytes=512 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+        )
+        logging.basicConfig(
+            level=logging.INFO,
+            handlers=[handler],
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
+    except OSError:
+        # Logging should never prevent the countdown widget from starting.
+        logging.basicConfig(level=logging.WARNING)
+
+
 def load_config():
     if not CONFIG_PATH.exists() and LEGACY_CONFIG_PATH.exists() and LEGACY_CONFIG_PATH != CONFIG_PATH:
         try:
@@ -181,8 +206,22 @@ def load_config():
     try:
         with CONFIG_PATH.open("r", encoding="utf-8") as config_file:
             config = json.load(config_file)
-    except (json.JSONDecodeError, OSError):
-        messagebox.showwarning("Work Countdown", "配置文件读取失败，将使用默认配置。")
+        if not isinstance(config, dict):
+            raise ValueError("配置文件必须是 JSON 对象")
+    except (json.JSONDecodeError, OSError, TypeError, ValueError) as error:
+        broken_path = CONFIG_PATH.with_name(
+            f"config.broken.{datetime.now():%Y%m%d-%H%M%S}.json"
+        )
+        try:
+            if CONFIG_PATH.exists():
+                shutil.copy2(CONFIG_PATH, broken_path)
+        except OSError:
+            LOGGER.exception("无法备份损坏的配置文件")
+        LOGGER.warning("配置文件读取失败，将使用默认配置: %s", error)
+        try:
+            save_config(DEFAULT_CONFIG)
+        except OSError:
+            LOGGER.exception("无法写回默认配置")
         return deepcopy(DEFAULT_CONFIG)
 
     return deep_merge(DEFAULT_CONFIG, migrate_legacy_config(config))
@@ -667,6 +706,7 @@ class CountdownWidget:
         except Exception:
             # A missing or unsupported tray backend should not prevent the
             # countdown widget itself from opening.
+            LOGGER.exception("系统托盘初始化失败")
             self.tray_icon = None
             self.tray_thread = None
 
@@ -1198,12 +1238,19 @@ class CountdownWidget:
 
 
 def main():
+    setup_logging()
+    LOGGER.info("启动 %s v%s", APP_NAME, APP_VERSION)
     if not acquire_single_instance():
+        LOGGER.info("检测到已有实例，退出当前进程")
         return
     try:
         CountdownWidget().run()
     except Exception as error:
-        messagebox.showerror(APP_NAME, str(error))
+        LOGGER.exception("程序运行失败")
+        try:
+            messagebox.showerror(APP_NAME, str(error))
+        except tk.TclError:
+            pass
         sys.exit(1)
 
 
