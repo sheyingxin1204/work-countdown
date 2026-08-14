@@ -2,8 +2,13 @@ $ErrorActionPreference = "Stop"
 
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $distDir = Join-Path $projectDir "dist"
+$installerDir = Join-Path $projectDir "installer"
 $outputPath = Join-Path $distDir "SHA256SUMS.txt"
-$assets = Get-ChildItem -LiteralPath $distDir -Filter "*.exe" -File | Sort-Object Name
+$assets = @(Get-ChildItem -LiteralPath $distDir -Filter "*.exe" -File)
+if (Test-Path -LiteralPath $installerDir) {
+    $assets += Get-ChildItem -LiteralPath $installerDir -Filter "*.exe" -File
+}
+$assets = $assets | Sort-Object Name
 if (-not $assets) {
     throw "No EXE assets were found in dist."
 }
